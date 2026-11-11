@@ -1,0 +1,19 @@
+{
+  "name": "deepwood-3d-prototype",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "DeepWood 3D feasibility prototype: rigged character + real tree assets in the Campfire View forest.",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0 --port 5174",
+    "build": "vite build",
+    "preview": "vite preview --port 4175"
+  },
+  "dependencies": {
+    "three": "^0.170.0"
+  },
+  "devDependencies": {
+    "@gltf-transform/cli": "^4.5.1",
+    "vite": "^6.0.0"
+  }
+}
