@@ -502,7 +502,7 @@ function updateHud() {
   el.trees.textContent = String(state.trees);
   el.api.textContent = renderer.capabilities.isWebGL2 ? 'WebGL2' : 'WebGL1';
   el.gpuhint.textContent = navigator.gpu ? 'available' : 'no';
-  el.tex.textContent = tooltipByteEstimate ? `${(tooltipByteEstimate / 1048576).toFixed(1)} MB` : '–';
+  el.tex.textContent = tooltipByteEstimate ? `${(tooltipByteEstimate / 1048576).toFixed(1)} MB` : 'n/a';
   el.perf.textContent = fpsAvg < 25
     ? `note: ${fpsAvg.toFixed(1)} fps at ${renderer.info.render.calls} draw calls — this box is a 4-vCPU cloud VM with no GPU (software raster), not a hardware measure.`
     : '';
@@ -595,20 +595,19 @@ const SPECIES = [
     const heads = await Promise.all(files.map(async (f) => {
       try {
         const r = await fetch(f, { method: 'HEAD' });
-        return Number(r.headers.get('content-length') || 0);
+        const n = Number(r.headers.get('content-length') || 0);
+        if (n) return n;
+      } catch { /* fall through to a measured read */ }
+      try {
+        // Vercel omits content-length on HEAD responses, and headless Chrome
+        // does not populate resource timings, so metadata alone reports 0.
+        // Measure the response instead: the loader just downloaded these GLBs,
+        // so force-cache reuses that entry rather than fetching a second copy.
+        const r = await fetch(f, { cache: 'force-cache' });
+        return (await r.arrayBuffer()).byteLength;
       } catch { return 0; }
     }));
-    tooltipByteEstimate = heads.reduce((a, b) => a + b, 0);
-    if (!tooltipByteEstimate) {
-      // Some CDNs (Vercel) omit content-length on HEAD. Fall back to what the
-      // browser actually pulled for the same files rather than printing "–".
-      const res = performance.getEntriesByType('resource');
-      tooltipByteEstimate = files.reduce((n, f) => {
-        const hit = res.find((r) => r.name.endsWith(f));
-        return n + (hit ? (hit.transferSize || hit.decodedBodySize || 0) : 0);
-      }, 0);
-    }
-    state.texBytes = tooltipByteEstimate;
+    state.texBytes = tooltipByteEstimate = heads.reduce((a, b) => a + b, 0);
     state.assetBytes = Object.fromEntries(files.map((f, i) => [f.split('/').pop(), heads[i]]));
 
     await loadCharacter();
