@@ -599,6 +599,15 @@ const SPECIES = [
       } catch { return 0; }
     }));
     tooltipByteEstimate = heads.reduce((a, b) => a + b, 0);
+    if (!tooltipByteEstimate) {
+      // Some CDNs (Vercel) omit content-length on HEAD. Fall back to what the
+      // browser actually pulled for the same files rather than printing "–".
+      const res = performance.getEntriesByType('resource');
+      tooltipByteEstimate = files.reduce((n, f) => {
+        const hit = res.find((r) => r.name.endsWith(f));
+        return n + (hit ? (hit.transferSize || hit.decodedBodySize || 0) : 0);
+      }, 0);
+    }
     state.texBytes = tooltipByteEstimate;
     state.assetBytes = Object.fromEntries(files.map((f, i) => [f.split('/').pop(), heads[i]]));
 
