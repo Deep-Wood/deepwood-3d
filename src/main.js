@@ -29,6 +29,7 @@ const state = {
   shadows: true,
   trees: 0,
   clip: 'Idle',
+  gait: 'Idle', // button-driven locomotion: keeps walking until told to stop
   texBytes: 0,
 };
 window.__proto3d = state;
@@ -468,7 +469,16 @@ addEventListener('keydown', (e) => keys.add(e.code));
 addEventListener('keyup', (e) => keys.delete(e.code));
 addEventListener('blur', () => keys.clear());
 document.querySelectorAll('button.clip[data-clip]').forEach((b) => {
-  b.addEventListener('click', () => setClip(b.dataset.clip));
+  b.addEventListener('click', () => {
+    const name = b.dataset.clip;
+    // Swapping the clip alone was pointless: with no key held the render loop
+    // set it straight back to Idle on the next frame, so the button looked
+    // dead. Walk/Run now set a GAIT that keeps driving the character; clicking
+    // the running one (or Idle) stops it.
+    const next = name !== 'Idle' && state.gait === name ? 'Idle' : name;
+    state.gait = next;
+    setClip(next, { force: true });
+  });
 });
 
 // ---------------------------------------------------------------- resize ---
@@ -503,8 +513,10 @@ function updateHud() {
   el.api.textContent = renderer.capabilities.isWebGL2 ? 'WebGL2' : 'WebGL1';
   el.gpuhint.textContent = navigator.gpu ? 'available' : 'no';
   el.tex.textContent = tooltipByteEstimate ? `${(tooltipByteEstimate / 1048576).toFixed(1)} MB` : 'n/a';
+  // Short on purpose: this used to be one long sentence that stretched the
+  // panel across half the screen because the panel had no width cap.
   el.perf.textContent = fpsAvg < 25
-    ? `note: ${fpsAvg.toFixed(1)} fps at ${renderer.info.render.calls} draw calls — this box is a 4-vCPU cloud VM with no GPU (software raster), not a hardware measure.`
+    ? `⚠ ${fpsAvg.toFixed(1)} fps — software raster (no GPU). On a real GPU: try ?lite=1 if it stays low.`
     : '';
 }
 
@@ -520,24 +532,37 @@ function tick() {
 
   // character locomotion
   if (character) {
-    const run = keys.has('ShiftLeft') || keys.has('ShiftRight');
-    const speed = run ? 4.6 : 1.7;
     move.set(
       (keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0),
       0,
       (keys.has('KeyS') ? 1 : 0) - (keys.has('KeyW') ? 1 : 0),
     );
-    if (move.lengthSq() > 0) {
+    const keysDown = move.lengthSq() > 0;
+    if (keysDown && state.gait !== 'Idle') state.gait = 'Idle'; // keys take over
+
+    let gait = state.gait;
+    if (keysDown) {
       move.normalize();
       const yaw = Math.atan2(move.x, move.z);
       character.rotation.y = THREE.MathUtils.lerp(character.rotation.y, character.rotation.y + ((yaw - character.rotation.y + Math.PI * 3) % (Math.PI * 2)) - Math.PI, 0.15);
-      const nx = THREE.MathUtils.clamp(character.position.x + move.x * speed * dt, -68, 68);
-      const nz = THREE.MathUtils.clamp(character.position.z + move.z * speed * dt, -68, 68);
-      character.position.set(nx, heightAt(nx, nz), nz);
-      setClip(run ? 'Run' : 'Walk');
-    } else {
-      setClip('Idle');
+      gait = (keys.has('ShiftLeft') || keys.has('ShiftRight')) ? 'Run' : 'Walk';
+    } else if (gait !== 'Idle') {
+      // Button gait: the character's local +Z is its facing, so walk it home and
+      // turn it around at the edge of the clearing instead of walking into fog.
+      if (Math.hypot(character.position.x, character.position.z) > 62) {
+        character.rotation.y += Math.PI;
+      }
     }
+
+    if (gait !== 'Idle') {
+      const speed = gait === 'Run' ? 4.6 : 1.7;
+      const dx = keysDown ? move.x : Math.sin(character.rotation.y);
+      const dz = keysDown ? move.z : Math.cos(character.rotation.y);
+      const nx = THREE.MathUtils.clamp(character.position.x + dx * speed * dt, -68, 68);
+      const nz = THREE.MathUtils.clamp(character.position.z + dz * speed * dt, -68, 68);
+      character.position.set(nx, heightAt(nx, nz), nz);
+    }
+    setClip(gait);
     if (metro.follow) {
       controls.target.lerp(new THREE.Vector3(character.position.x, character.position.y + 1.15, character.position.z), 0.08);
     }
@@ -624,6 +649,17 @@ const SPECIES = [
       for (const m of windMats) m.userData.wind.uStrength.value = state.wind ? 0.16 : 0;
       e.target.textContent = `wind: ${state.wind ? 'on' : 'off'}`;
     };
+    // Clear the readout off the scene in one click (or H) when showing it to
+    // someone: the stats are for us, the forest is for them.
+    const hudEl = document.getElementById('hud');
+    const hudBtn = document.getElementById('toggle-hud');
+    const showHud = (visible) => {
+      hudEl.style.display = visible ? '' : 'none';
+      hudBtn.textContent = visible ? 'hide stats' : 'show stats';
+      state.hudVisible = visible;
+    };
+    hudBtn.onclick = () => showHud(hudEl.style.display === 'none');
+    addEventListener('keydown', (e) => { if (e.code === 'KeyH') showHud(hudEl.style.display === 'none'); });
 
     el.loading.classList.add('hidden');
     state.ready = true;

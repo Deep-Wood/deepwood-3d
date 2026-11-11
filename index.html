@@ -16,8 +16,11 @@
         color: #e8dfc8; background: rgba(10, 18, 12, 0.72); border: 1px solid #2f4a35;
         border-radius: 8px; padding: 10px 12px; backdrop-filter: blur(4px);
         text-shadow: 0 1px 2px #000;
+        /* Capped: an uncapped panel let one long warning line stretch the HUD
+           across half the viewport, over the scene. */
+        max-width: min(320px, calc(100vw - 28px));
       }
-      #hud { left: 14px; top: 14px; min-width: 232px; }
+      #hud { left: 14px; top: 14px; width: 244px; }
       #hud h1 { margin: 0 0 6px; font: 600 13px/1.2 ui-monospace, monospace; letter-spacing: 1.5px; color: #cfe6c8; }
       #hud .row { display: flex; justify-content: space-between; gap: 14px; }
       #hud .row span:last-child { color: #fff; }
@@ -40,6 +43,15 @@
       #loading.hidden { opacity: 0; pointer-events: none; }
       #bar { width: 240px; height: 4px; background: #1d2c21; border-radius: 2px; overflow: hidden; margin-top: 10px; }
       #bar > i { display: block; height: 100%; width: 0%; background: #6fbf73; transition: width .2s; }
+
+      /* Small or short screens: shrink the text, drop the credits line, and let
+         the panel take only the width it needs. */
+      @media (max-width: 760px), (max-height: 560px) {
+        .panel { font-size: 11px; padding: 8px 9px; }
+        #hud { width: auto; max-width: min(300px, calc(100vw - 28px)); }
+        #sources, #controls .legend { display: none; }
+        #controls { right: 10px; bottom: 10px; }
+      }
     </style>
   </head>
   <body>
@@ -57,22 +69,24 @@
       <div class="row"><span>asset payload</span><span id="tex">–</span></div>
       <div class="sep"></div>
       <div class="note" id="sources">
-        trees: Poly Haven (CC0) · character: three.js sample rig (placeholder)
+        trees: Poly Haven CC0 · hero: three.js sample (placeholder)
       </div>
       <div class="note warn" id="perf"></div>
     </div>
 
     <div id="controls" class="panel">
-      <div><span class="k">W A S D</span> move · <span class="k">Shift</span> run · <span class="k">drag</span> orbit · <span class="k">wheel</span> zoom</div>
+      <div class="legend"><span class="k">W A S D</span> move · <span class="k">Shift</span> run · <span class="k">drag</span> orbit · <span class="k">wheel</span> zoom</div>
       <div style="margin-top:6px">
-        animation:
+        walk:
         <button class="clip" data-clip="Idle" aria-pressed="true">Idle</button>
         <button class="clip" data-clip="Walk">Walk</button>
         <button class="clip" data-clip="Run">Run</button>
+        <span class="legend" style="opacity:.65">— walks on its own; click again to stop</span>
       </div>
       <div style="margin-top:6px">
         <button class="clip" id="toggle-shadows">shadows: on</button>
         <button class="clip" id="toggle-wind">wind: on</button>
+        <button class="clip" id="toggle-hud">hide stats</button>
       </div>
     </div>
 
