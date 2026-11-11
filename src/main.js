@@ -299,7 +299,7 @@ function makeWindy(material, treeHeight, strength) {
 }
 
 /** Merge a glTF scene by material and draw it as instanced meshes. */
-function instancedFrom(gltfScene, placements) {
+function instancedFrom(gltfScene, placements, { castShadow = true } = {}) {
   gltfScene.updateWorldMatrix(true, true);
   const box = new THREE.Box3().setFromObject(gltfScene);
   const height = box.max.y - box.min.y;
@@ -334,12 +334,15 @@ function instancedFrom(gltfScene, placements) {
     const mat = foliage ? makeWindy(material, height, 0.16) : material.clone();
     mat.side = foliage ? THREE.DoubleSide : mat.side;
     const inst = new THREE.InstancedMesh(merged, mat, placements.length);
-    inst.castShadow = true;
+    inst.castShadow = castShadow;
     inst.receiveShadow = true;
     inst.instanceMatrix.setUsage(THREE.StaticDrawUsage);
     group.add(inst);
-    state.trees += placements.length;
   }
+  // Counted once per species. This used to sit inside the per-material loop
+  // above, so a two-material tree (bark + foliage) reported double its
+  // instances and the HUD overstated the forest by ~2x.
+  state.trees += placements.length;
 
   const m4 = new THREE.Matrix4();
   const q = new THREE.Quaternion();
@@ -359,16 +362,31 @@ function instancedFrom(gltfScene, placements) {
   return { group, height };
 }
 
-/** Poisson-ish scatter: reject spots too close together or in the clearing. */
-function scatter(count, { minR = 11, maxR = 68, minDist = 3.4, tries = 22, scale = [0.8, 1.5] }) {
+/**
+ * Poisson-ish scatter: spots must not crowd each other, and none may land in
+ * the camp clearing.
+ *
+ * Radius is sampled as sqrt(minR² + u·(maxR²−minR²)) so the density is uniform
+ * PER UNIT AREA. Sampling the radius uniformly instead — which is what this did
+ * — concentrates instances in a ring at maxR: the camp stood on bare ground and
+ * every tree sat on the horizon.
+ */
+function scatter(count, { minR = 6, maxR = 68, minDist = 3.4, tries = 26, scale = [0.8, 1.5], gate = 0.3, nearClear = 42 }) {
   const spots = [];
+  const r2span = maxR * maxR - minR * minR;
   for (let i = 0; i < count; i++) {
     for (let t = 0; t < tries; t++) {
       const a = vnoise(i * 3.1 + t, 7.7) * Math.PI * 2;
-      const r = minR + vnoise(i * 1.7 + t, 19.3) * (maxR - minR);
+      const r = Math.sqrt(minR * minR + vnoise(i * 1.7 + t, 19.3) * r2span);
       const x = Math.cos(a) * r, z = Math.sin(a) * r;
-      const density = vnoise(x * 0.08 + 5, z * 0.08 - 3);
-      if (density < 0.42) continue;
+      // Low-frequency gate: makes clumps and glades instead of a uniform lawn.
+      // It is only applied OUTSIDE the visible band. This noise sits below the
+      // threshold across the whole camp area, so gating the near field rejected
+      // every nearby attempt and left the trees in a ring at maxR.
+      if (r > nearClear) {
+        const density = vnoise(x * 0.055 + 5, z * 0.055 - 3);
+        if (density < gate) continue;
+      }
       if (spots.some((s) => Math.hypot(s.x - x, s.z - z) < minDist)) continue;
       spots.push({
         x, z,
@@ -379,6 +397,71 @@ function scatter(count, { minR = 11, maxR = 68, minDist = 3.4, tries = 22, scale
     }
   }
   return spots;
+}
+
+// ---------------------------------------------------------- undergrowth ----
+/**
+ * Shrub clumps: two crossed quads per clump with a canvas-drawn blade texture,
+ * alpha-tested. A floor of blades costs ~4 triangles per instance, so it can be
+ * dense where the trees have to stay countable.
+ */
+function shrubTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  const g = c.getContext('2d');
+  g.lineCap = 'round';
+  for (let i = 0; i < 34; i++) {
+    const x = 12 + vnoise(i, 3.3) * 104;
+    const h = 30 + vnoise(i, 8.1) * 86;
+    const bend = (vnoise(i, 11.7) - 0.5) * 48;
+    const r = (48 + vnoise(i, 21) * 70) | 0;
+    const gg = (94 + vnoise(i, 33) * 84) | 0;
+    const b = (38 + vnoise(i, 41) * 44) | 0;
+    g.strokeStyle = `rgba(${r}, ${gg}, ${b}, ${0.68 + vnoise(i, 51) * 0.32})`;
+    g.lineWidth = 1.8 + vnoise(i, 61) * 2.6;
+    g.beginPath();
+    g.moveTo(x, 128);
+    g.quadraticCurveTo(x + bend * 0.4, 128 - h * 0.55, x + bend, 128 - h);
+    g.stroke();
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+function shrubGeometry(w = 1.3, h = 1.05) {
+  const a = new THREE.PlaneGeometry(w, h);
+  a.translate(0, h / 2, 0);
+  const b = a.clone();
+  b.rotateY(Math.PI / 2);
+  return mergeGeometries([a, b]);
+}
+
+function buildUndergrowth() {
+  // Half-again the normal density at every lite level: the floor is what makes
+  // the ground read as "forest" instead of "field".
+  const k = LITE_K >= 1 ? 1 : Math.max(LITE_K, 0.35);
+  const spots = scatter(Math.round(1100 * k), {
+    minR: 3.0, maxR: 46, minDist: 0.8, tries: 12, gate: 0.16, scale: [0.7, 1.8],
+  });
+  const geo = shrubGeometry();
+  const mat = new THREE.MeshStandardMaterial({
+    map: shrubTexture(), alphaTest: 0.35, side: THREE.DoubleSide,
+    roughness: 0.95, metalness: 0,
+  });
+  const inst = new THREE.InstancedMesh(geo, mat, spots.length);
+  const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = new THREE.Vector3(), p = new THREE.Vector3();
+  spots.forEach((pl, i) => {
+    p.set(pl.x, heightAt(pl.x, pl.z) - 0.04, pl.z);
+    q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), pl.rot);
+    sc.setScalar(pl.scale);
+    inst.setMatrixAt(i, m4.compose(p, q, sc));
+  });
+  inst.instanceMatrix.needsUpdate = true;
+  inst.receiveShadow = true;
+  inst.castShadow = false; // blades in the shadow pass cost more than they add
+  scene.add(inst);
+  state.shrubs = spots.length;
 }
 
 // ------------------------------------------------------------ character ----
@@ -540,15 +623,19 @@ function tick() {
     const keysDown = move.lengthSq() > 0;
     if (keysDown && state.gait !== 'Idle') state.gait = 'Idle'; // keys take over
 
+    // The rig faces its local -Z (measured: the toes sit 0.816·(-Z) ahead of the
+    // ankles), so aiming the yaw at the travel vector makes it walk backwards.
+    // Both the yaw and the gait translation below are therefore expressed
+    // against -Z.
     let gait = state.gait;
     if (keysDown) {
       move.normalize();
-      const yaw = Math.atan2(move.x, move.z);
+      const yaw = Math.atan2(-move.x, -move.z);
       character.rotation.y = THREE.MathUtils.lerp(character.rotation.y, character.rotation.y + ((yaw - character.rotation.y + Math.PI * 3) % (Math.PI * 2)) - Math.PI, 0.15);
       gait = (keys.has('ShiftLeft') || keys.has('ShiftRight')) ? 'Run' : 'Walk';
     } else if (gait !== 'Idle') {
-      // Button gait: the character's local +Z is its facing, so walk it home and
-      // turn it around at the edge of the clearing instead of walking into fog.
+      // Button gait: walk it home and turn it around at the edge of the
+      // clearing instead of walking off into the fog.
       if (Math.hypot(character.position.x, character.position.z) > 62) {
         character.rotation.y += Math.PI;
       }
@@ -556,8 +643,8 @@ function tick() {
 
     if (gait !== 'Idle') {
       const speed = gait === 'Run' ? 4.6 : 1.7;
-      const dx = keysDown ? move.x : Math.sin(character.rotation.y);
-      const dz = keysDown ? move.z : Math.cos(character.rotation.y);
+      const dx = keysDown ? move.x : -Math.sin(character.rotation.y);
+      const dz = keysDown ? move.z : -Math.cos(character.rotation.y);
       const nx = THREE.MathUtils.clamp(character.position.x + dx * speed * dt, -68, 68);
       const nz = THREE.MathUtils.clamp(character.position.z + dz * speed * dt, -68, 68);
       character.position.set(nx, heightAt(nx, nz), nz);
@@ -582,32 +669,54 @@ const metro = { follow: true };
 
 // ------------------------------------------------------------------ boot ---
 /**
- * The forest. Five real models, each decimated from a Poly Haven CC0 scan:
- * pine shrub and searsia (conifer-ish cover), quiver tree (broadleaf), plus a
- * stump and a dead trunk — the "depleted node" states the game needs.
+ * The forest, in two tiers — five real models, each decimated from a Poly Haven
+ * CC0 scan (pine shrub and searsia as cover, quiver tree broadleaf, plus the
+ * stump and dead trunk that double as the game's "depleted node" states).
+ *
+ * `near` is the full-detail decimation; `far` is the same scan at ~1/7 the
+ * triangles with a 128 px texture set. That split is what makes a dense
+ * treeline affordable: measured, the near tier is 440 trees / 6.20 M triangles
+ * and the far tier is 965 trees / 1.94 M — the whole far tier costs less than
+ * the 170 pines, and at 40+ m the difference is invisible. Radii stop at the far
+ * side of the fog (it starts fading at 70 m) so no triangles are spent where fog
+ * paints over them. Counts are scaled by the ?lite level at boot.
  */
 const SPECIES = [
-  { slug: 'pine_sapling_small',  n: 190, scatter: { minR: 10.2, maxR: 150, minDist: 3.0, scale: [0.9, 2.1] } },
-  { slug: 'quiver_tree_01',      n: 70,  scatter: { minR: 12.5, maxR: 140, minDist: 6.5, scale: [0.9, 1.6] } },
-  { slug: 'searsia_lucida',      n: 110, scatter: { minR: 10.0, maxR: 130, minDist: 2.4, scale: [0.9, 1.7] } },
-  { slug: 'tree_stump_01',       n: 22,  scatter: { minR: 9, maxR: 70, minDist: 5.0, scale: [0.9, 1.3] } },
-  { slug: 'dead_tree_trunk_02',  n: 18,  scatter: { minR: 14, maxR: 110, minDist: 8.0, scale: [1.0, 1.6] } },
+  { slug: 'pine_sapling_small',
+    near: { n: 170, minR: 6.5, maxR: 40, minDist: 2.4, scale: [0.9, 2.1] },
+    far:  { n: 420, minR: 40,  maxR: 94, minDist: 3.6, scale: [0.9, 2.1], gate: 0.26 } },
+  { slug: 'searsia_lucida',
+    near: { n: 130, minR: 6.0, maxR: 38, minDist: 2.0, scale: [0.9, 1.7] },
+    far:  { n: 330, minR: 38,  maxR: 86, minDist: 3.0, scale: [0.9, 1.7], gate: 0.26 } },
+  { slug: 'quiver_tree_01',
+    near: { n: 45,  minR: 8.0, maxR: 42, minDist: 5.0, scale: [0.9, 1.6] },
+    far:  { n: 130, minR: 42,  maxR: 88, minDist: 6.0, scale: [0.9, 1.6], gate: 0.26 } },
+  { slug: 'tree_stump_01',
+    near: { n: 55,  minR: 5.5, maxR: 34, minDist: 3.4, scale: [0.9, 1.3] },
+    far:  { n: 40,  minR: 34,  maxR: 58, minDist: 5.0, scale: [0.9, 1.3], gate: 0.3 } },
+  { slug: 'dead_tree_trunk_02',
+    near: { n: 40,  minR: 9.0, maxR: 40, minDist: 6.0, scale: [1.0, 1.6] },
+    far:  { n: 45,  minR: 40,  maxR: 74, minDist: 7.5, scale: [1.0, 1.6], gate: 0.3 } },
 ];
 
 (async function boot() {
   try {
     const k = LITE_K;
-    const models = await Promise.all(
-      SPECIES.map((s) => loader.loadAsync(`/assets/trees/${s.slug}.glb`)),
-    );
+    const [models, farModels] = await Promise.all([
+      Promise.all(SPECIES.map((s) => loader.loadAsync(`/assets/trees/${s.slug}.glb`))),
+      Promise.all(SPECIES.map((s) => loader.loadAsync(`/assets/trees/${s.slug}_far.glb`))),
+    ]);
     state.species = {};
     models.forEach((gltf, i) => {
       const s = SPECIES[i];
-      const placements = scatter(Math.round(s.n * k), s.scatter);
-      const built = instancedFrom(gltf.scene, placements);
-      scene.add(built.group);
-      state.species[s.slug] = placements.length;
+      const near = scatter(Math.round(s.near.n * k), s.near);
+      const far = scatter(Math.round(s.far.n * k), s.far);
+      const built = instancedFrom(gltf.scene, near);
+      const builtFar = instancedFrom(farModels[i].scene, far, { castShadow: false });
+      scene.add(built.group, builtFar.group);
+      state.species[s.slug] = near.length + far.length;
       built.group.userData.treeHeight = built.height;
+      builtFar.group.userData.treeHeight = builtFar.height;
     });
 
     // Asset budget: HEAD the shipped files and sum the real Content-Length.
@@ -615,6 +724,7 @@ const SPECIES = [
     // would print a fake "0 MB"; this is the number a phone actually pulls.
     const files = [
       ...SPECIES.map((s) => `/assets/trees/${s.slug}.glb`),
+      ...SPECIES.map((s) => `/assets/trees/${s.slug}_far.glb`),
       '/assets/char/soldier.glb',
     ];
     const heads = await Promise.all(files.map(async (f) => {
@@ -634,6 +744,8 @@ const SPECIES = [
     }));
     state.texBytes = tooltipByteEstimate = heads.reduce((a, b) => a + b, 0);
     state.assetBytes = Object.fromEntries(files.map((f, i) => [f.split('/').pop(), heads[i]]));
+
+    buildUndergrowth();
 
     await loadCharacter();
     document.querySelectorAll('#toggle-shadows, #toggle-wind').forEach((btn) => {});
@@ -660,6 +772,28 @@ const SPECIES = [
     };
     hudBtn.onclick = () => showHud(hudEl.style.display === 'none');
     addEventListener('keydown', (e) => { if (e.code === 'KeyH') showHud(hudEl.style.display === 'none'); });
+
+    // Harness handles: let a test park the camera at a known bearing from the
+    // character (used to settle which way the imported model actually faces).
+    state.camera = camera;
+    state.controls = controls;
+    state.orbitTo = (yawDeg = 0, dist = 4.6, height = 1.6) => {
+      const a = (yawDeg * Math.PI) / 180;
+      const c = state.character;
+      if (!c) return null;
+      metro.follow = false;
+      camera.position.set(c.position.x + Math.sin(a) * dist, c.position.y + height, c.position.z + Math.cos(a) * dist);
+      controls.target.set(c.position.x, c.position.y + 1.05, c.position.z);
+      controls.update();
+      return { pos: camera.position.toArray().map((n) => +n.toFixed(2)), charYaw: +c.rotation.y.toFixed(3) };
+    };
+    /** World direction the model's local +Z axis points in (facing probe). */
+    state.facing = () => {
+      const c = state.character;
+      if (!c) return null;
+      const f = new THREE.Vector3(0, 0, 1).applyQuaternion(c.quaternion);
+      return [+f.x.toFixed(3), +f.z.toFixed(3)];
+    };
 
     el.loading.classList.add('hidden');
     state.ready = true;

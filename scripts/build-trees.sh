@@ -14,9 +14,14 @@ GT="npx --no-install gltf-transform"
 OUT=public/assets/trees
 mkdir -p "$OUT" work/out
 
+# Usage: bash scripts/build-trees.sh [ratio] [error] [suffix] [texsize]
+#   bash scripts/build-trees.sh                 # full-detail set  -> <slug>.glb
+#   bash scripts/build-trees.sh 0.02 0.03 _far 128   # far LOD      -> <slug>_far.glb
 SPECIES=(pine_sapling_small quiver_tree_01 searsia_lucida tree_stump_01 dead_tree_trunk_02)
 RATIO="${1:-0.10}"
 ERR="${2:-0.005}"
+SUFFIX="${3:-}"
+TEXSZ="${4:-512}"
 
 for slug in "${SPECIES[@]}"; do
   src="work/$slug/${slug}_1k.gltf"
@@ -27,16 +32,16 @@ for slug in "${SPECIES[@]}"; do
   $GT copy    "$src"                     "work/out/$slug.a.glb" >/dev/null
   $GT weld    "work/out/$slug.a.glb"     "work/out/$slug.b.glb" >/dev/null
   $GT simplify "work/out/$slug.b.glb"    "work/out/$slug.c.glb" --ratio "$RATIO" --error "$ERR" >/dev/null
-  $GT resize  "work/out/$slug.c.glb"     "work/out/$slug.d.glb" --width 512 --height 512 >/dev/null
+  $GT resize  "work/out/$slug.c.glb"     "work/out/$slug.d.glb" --width "$TEXSZ" --height "$TEXSZ" >/dev/null
   $GT prune   "work/out/$slug.d.glb"     "work/out/$slug.e.glb" >/dev/null
-  $GT dedup   "work/out/$slug.e.glb"     "$OUT/$slug.glb"       >/dev/null
+  $GT dedup   "work/out/$slug.e.glb"     "$OUT/$slug$SUFFIX.glb" >/dev/null
   rm -f work/out/$slug.[a-e].glb
 
-  echo "--- $slug"
+  echo "--- $slug$SUFFIX"
   echo "    raw buffer : ${rawbin} MB   (gltf ${raw})"
-  echo "    shipped    : $(du -h "$OUT/$slug.glb" | cut -f1)  $(python3 -c "
+  echo "    shipped    : $(du -h "$OUT/$slug$SUFFIX.glb" | cut -f1)  $(python3 -c "
 import struct, json, sys
-b = open('$OUT/$slug.glb','rb').read()
+b = open('$OUT/$slug$SUFFIX.glb','rb').read()
 clen, _ = struct.unpack_from('<II', b, 12)
 j = json.loads(b[20:20+clen])
 tris = 0
