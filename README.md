@@ -35,9 +35,11 @@ a 2× pixel ratio. It is now **light by default**, with the heavy version opt-in
 | lite 2 | `?lite=2` | 15% | 0.7× | off | none | fog 16-85 m |
 | lite 3 | `?lite=3` | 5% | 0.5× | off | none | fog 12-70 m — automated runs only |
 
-Measured on the built site by reading it off the HUD: **default 706 trees, 1,210
-plants, 4.93 M triangles a frame, 68 draw calls, 1× pixel ratio, no MSAA**;
-`?full` 1,387 trees / 2,420 plants / 9.67 M triangles a frame.
+Measured on the built site by reading it off the HUD: **default 723 trees, 1,210
+plants, 26 rocks, 5.28 M triangles a frame, 74 draw calls, 1× pixel ratio, no
+MSAA, 12.6 MB payload, tallest tree 34.6 m**; `?full` renders twice the instances.
+Tall trees are not cheap on fill — a 30 m canopy puts a lot of alpha-tested leaf
+over the camera at close range — so if the frame time climbs, that is where it is.
 
 The per-frame triangle figure counts every pass, including the shadow pass
 (three.js accumulates it in `renderer.info`) — which is why it is larger than the
@@ -62,7 +64,9 @@ spread instead of landing as one freeze.
 | Canopy trees | Poly Haven, **CC0** | `island_tree_01/02/03` — tall broadleaf trees, 6.4-12.4k triangles each, two LOD tiers. |
 | Mid-story trees | Poly Haven, **CC0** | `pine_sapling_small`, `searsia_lucida` filling the space between trunks. |
 | Understory | Poly Haven, **CC0** | `fern_02`, `calathea_orbifolia_01`, `anthurium_botany_01`, `pachira_aquatica_01`, `shrub_02`, `grass_medium_01` — real plants, 320-2,602 triangles each, planted by the thousand. |
-| Fallen wood | Poly Haven, **CC0** | `tree_stump_01`, `tree_stump_02`, `dead_tree_trunk_02` — the game's "depleted node" states, and real forest-floor debris. |
+| Emergent giant | Poly Haven, **CC0** | `jacaranda_tree` — the only model tagged both `jungle` and `tall`, 19.33 m at scale 1, so it forms the 25-35 m ceiling. |
+| Fallen wood | Poly Haven, **CC0** | `tree_stump_01`, `tree_stump_02`, `dead_tree_trunk_02` — the game's "depleted node" states, and the things the jump is for. |
+| Rocks | **built in code** | a noise-displaced icosahedron, ~320 triangles. The Poly Haven boulder is 66k raw and `simplify` would not take it below 54k — 2.4 MB for a rock. |
 | Tree materials | Poly Haven, **CC0** | real PBR sets: baseColor + normal + packed metallicRoughness/AO, 512 px near / 128 px far. |
 | Terrain, sky, sun, fog, camp | procedural | humid-overcast sky, canopy haze fog, dark humus floor, ACES tone mapping, PCF shadows. |
 
@@ -89,8 +93,48 @@ bash scripts/build-trees.sh 0.006 0.05 _far 128  # far LOD: <slug>_far.glb, 128 
 Three layers, because a forest that is dense only at the horizon is not a forest.
 Everything is instanced — the whole scene is 68 draw calls regardless of count
 (the shadow pass adds a handful more at full detail).
+### The models are small — measure before believing a forest is tall
+
+Read off the shipped files, height in metres: `island_tree_01` **4.98**,
+`island_tree_02` 3.40, `island_tree_03` **2.61**, `pine_sapling_small` 1.29,
+`searsia_lucida` 2.28, stumps 0.52-0.56, `jacaranda_tree` **19.33**.
+
+Against a 1.82 m character that is shrubbery, which is why the forest read as a
+field with bushes. So the scene scales them, and it does it **non-uniformly**:
+`scale` is width, `scaleY` is height, because a five-times-taller tree does not
+want a five-times-thicker trunk — a forest of 2 m-radius trunks is a wall you
+cannot walk through. Trunk collision radius grows with the 0.35 power of overall
+scale for the same reason.
+
+| layer | as planted | measured world height |
+|---|---|---|
+| jacaranda (emergent) | 9 | 25-35 m |
+| island trees, emergent pass | 22 | 18-33 m |
+| island trees, canopy | 185 | 12-20 m |
+| mid-story | 160 | 5-10 m |
+| fallen wood (jumpable) | 195 | 0.7-1.2 m |
+| understory plants | 2,420 | 0.3-1.0 m |
+| rocks (jumpable, procedural) | 18 | 0.7-1.5 m |
+
+## Movement and obstacles
+
+- **Walk into a trunk and you stop**, then slide along it (`blocked` in the HUD
+  hooks). The 2D game does the same thing — its endless-walk test asserts
+  `stopped before trunk`.
+- **Jump** with Space or the button: a kinematic arc, ~1.1 m apex, heavier than
+  real gravity because a floaty jump reads as underwater. No Jump clip exists in
+  the placeholder rig, so the gait clip keeps playing in the air.
+- **Obstacles are circles with a top height.** A jump clears anything whose top
+  sits below your feet, which is what makes logs, stumps and small boulders
+  jumpable and trunks not: at the default profile, 107 of 297 colliders are
+  jumpable. The same circles stop the camera seeing through a trunk, so movement
+  and the chase rig share one piece of world data.
+
+### Terrain and budget, measured on the built site
+
 Counts and triangles below are the **`?full`** tier; the default renders half of
-them. Measured by reading the built files back off disk:
+them, and the HUD reports the live figure. Measured by reading the built files
+back off disk:
 
 | layer | instances | triangles | payload | casts shadows |
 |---|---|---|---|---|

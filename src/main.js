@@ -94,6 +94,8 @@ const el = {
   tris: document.getElementById('tris'),
   trees: document.getElementById('trees'),
   plants: document.getElementById('plants'),
+  rocks: document.getElementById('rocks'),
+  tallest: document.getElementById('tallest'),
   profile: document.getElementById('profile'),
   ms: document.getElementById('ms'),
   dpr: document.getElementById('dpr'),
@@ -414,7 +416,7 @@ function instancedFrom(gltfScene, placements, { castShadow = true, tally = 'tree
     placements.forEach((pl, i) => {
       p.set(pl.x, heightAt(pl.x, pl.z) - 0.05, pl.z);
       q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), pl.rot);
-      s.setScalar(pl.scale);
+      s.set(pl.scale, pl.sy || pl.scale, pl.scale); // non-uniform: see SPECIES
       m4.compose(p, q, s);
       o.setMatrixAt(i, m4);
     });
@@ -432,7 +434,8 @@ function instancedFrom(gltfScene, placements, { castShadow = true, tally = 'tree
  * — concentrates instances in a ring at maxR: the camp stood on bare ground and
  * every tree sat on the horizon.
  */
-function scatter(count, { minR = 6, maxR = 68, minDist = 3.4, tries = 26, scale = [0.8, 1.5], gate = 0.3, nearClear = 42 }) {
+function scatter(count, { minR = 6, maxR = 68, minDist = 3.4, tries = 26, scale = [0.8, 1.5],
+                         scaleY = null, gate = 0.3, nearClear = 42 }) {
   const spots = [];
   const r2span = maxR * maxR - minR * minR;
   for (let i = 0; i < count; i++) {
@@ -449,10 +452,14 @@ function scatter(count, { minR = 6, maxR = 68, minDist = 3.4, tries = 26, scale 
         if (density < gate) continue;
       }
       if (spots.some((s) => Math.hypot(s.x - x, s.z - z) < minDist)) continue;
+      const syRange = scaleY || scale;
       spots.push({
         x, z,
         rot: vnoise(i + t, 42) * Math.PI * 2,
         scale: scale[0] + vnoise(i * 2.3 + t, 91) * (scale[1] - scale[0]),
+        // Height scales separately from width (see SPECIES): the models are
+        // small, and growing only the trunk radius with them walls off the world.
+        sy: syRange[0] + vnoise(i * 3.7 + t, 53) * (syRange[1] - syRange[0]),
       });
       break;
     }
@@ -611,7 +618,10 @@ async function loadCharacter() {
 }
 
 // ------------------------------------------------------------ interaction --
-addEventListener('keydown', (e) => keys.add(e.code));
+addEventListener('keydown', (e) => {
+  keys.add(e.code);
+  if (e.code === 'Space') { jumpQueued = true; e.preventDefault(); } // not a page scroll
+});
 addEventListener('keyup', (e) => keys.delete(e.code));
 addEventListener('blur', () => keys.clear());
 document.querySelectorAll('button.clip[data-clip]').forEach((b) => {
@@ -657,6 +667,8 @@ function updateHud() {
   el.tris.textContent = renderer.info.render.triangles.toLocaleString();
   el.trees.textContent = String(state.trees);
   el.plants.textContent = String(state.understory || 0);
+  el.rocks.textContent = String(state.rocks || 0);
+  el.tallest.textContent = state.tallest ? `${state.tallest.toFixed(1)} m` : '–';
   // Frame time in ms, not just fps: at 12 fps it matters a lot whether that is
   // 83 ms or 400 ms, and it localises the cost to the renderer vs the JS.
   el.ms.textContent = `${(1000 / Math.max(fpsAvg, 0.01)).toFixed(0)} ms`;
@@ -696,6 +708,22 @@ function tick() {
     // ankles), so aiming the yaw at the travel vector makes it walk backwards.
     // Both the yaw and the gait translation below are therefore expressed
     // against -Z.
+    // Jump: a kinematic arc, and the only way past a log, stump or boulder that
+    // blocks the path. The placeholder rig has no Jump clip, so the gait clip
+    // keeps playing while he is in the air — a real character needs one.
+    if (jumpQueued && !airborne) { airborne = true; vy = JUMP_V; }
+    jumpQueued = false;
+    if (airborne) {
+      vy -= GRAVITY * dt;
+      jumpH += vy * dt;
+      if (jumpH <= 0) { jumpH = 0; vy = 0; airborne = false; }
+    }
+    state.jumpH = +jumpH.toFixed(3);
+    state.airborne = airborne;
+    // Apex recorded in-page: at software-raster frame rates a poll can miss the
+    // top of the arc entirely and make a working jump look broken.
+    state.maxJumpH = Math.max(state.maxJumpH || 0, jumpH);
+
     let gait = state.gait;
     if (keysDown) {
       move.normalize();
@@ -722,9 +750,26 @@ function tick() {
       const speed = gait === 'Run' ? 4.6 : 1.7;
       const dx = keysDown ? move.x : -Math.sin(character.rotation.y);
       const dz = keysDown ? move.z : -Math.cos(character.rotation.y);
-      const nx = THREE.MathUtils.clamp(character.position.x + dx * speed * dt, -68, 68);
-      const nz = THREE.MathUtils.clamp(character.position.z + dz * speed * dt, -68, 68);
-      character.position.set(nx, heightAt(nx, nz), nz);
+      let nx = THREE.MathUtils.clamp(character.position.x + dx * speed * dt, -68, 68);
+      let nz = THREE.MathUtils.clamp(character.position.z + dz * speed * dt, -68, 68);
+      // Slide along what he cannot walk through rather than stopping dead: try
+      // the whole step, then one axis at a time. If he is somehow already
+      // inside something (a jump that lands on a log), let him out instead of
+      // pinning him there.
+      const feet = jumpH + 0.12;
+      const stuck = blockedAt(character.position.x, character.position.z, feet);
+      if (!stuck && blockedAt(nx, nz, feet)) {
+        if (!blockedAt(nx, character.position.z, feet)) nz = character.position.z;
+        else if (!blockedAt(character.position.x, nz, feet)) nx = character.position.x;
+        else { nx = character.position.x; nz = character.position.z; }
+        state.blocked = true;
+      } else {
+        state.blocked = false;
+      }
+      character.position.set(nx, heightAt(nx, nz) + jumpH, nz);
+    } else {
+      // Standing still can still be mid-jump.
+      character.position.y = heightAt(character.position.x, character.position.z) + jumpH;
     }
     setClip(gait);
     if (metro.follow) {
@@ -734,22 +779,35 @@ function tick() {
       //      fixed world bearing and he walks sideways out of "tracking"),
       //   3. pull in when a trunk blocks the line to his chest.
       const p = character.position;
-      if (!prevFollow) { prevFollow = p.clone(); prevYaw = character.rotation.y; }
-      const dx = p.x - prevFollow.x, dy = p.y - prevFollow.y, dz = p.z - prevFollow.z;
-      if (dx || dy || dz) {
-        camera.position.x += dx; camera.position.y += dy; camera.position.z += dz;
-        controls.target.x += dx; controls.target.y += dy; controls.target.z += dz;
+      if (!prevFollow) {
+        prevFollow = p.clone();
+        prevYaw = character.rotation.y;
+        camFocusY = p.y + 1.15;
+        prevFocusY = camFocusY;
       }
+      // Horizontal: still locked to him exactly, so he can never drift
+      // off-centre — that was the "he gets lost" bug and it stays fixed.
+      const dx = p.x - prevFollow.x, dz = p.z - prevFollow.z;
+      camera.position.x += dx; camera.position.z += dz;
+      controls.target.x += dx; controls.target.z += dz;
+
+      // Vertical: SPRUNG. Following his height exactly meant every jump, log and
+      // ridge snapped the whole view up and down, which is what made the follow
+      // read as rigid rather than continuous. The eye now rides a damped version
+      // of his height instead.
+      camFocusY += ((p.y + 1.15) - camFocusY) * (1 - Math.exp(-9 * dt));
+      const dySoft = camFocusY - prevFocusY;
+      camera.position.y += dySoft;
+      prevFocusY = camFocusY;
+
       const dyaw = wrapPi(character.rotation.y - prevYaw);
       if (Math.abs(dyaw) > 1e-4) rotateRigAround(p, dyaw);
       prevFollow.copy(p);
       prevYaw = character.rotation.y;
-      state.followDbg = { dyaw: +dyaw.toFixed(4), yaw: +character.rotation.y.toFixed(3) };
+      state.followDbg = { dyaw: +dyaw.toFixed(4), yaw: +character.rotation.y.toFixed(3),
+                          focusY: +camFocusY.toFixed(2) };
 
-      // The rig is rigid, so aim it AT him rather than easing the target toward
-      // him: the eased version let the look point lag up to 2.6 m behind, which
-      // pushes him off-centre — worst exactly when he is running.
-      camFocus.set(p.x, p.y + 1.15, p.z);
+      camFocus.set(p.x, camFocusY, p.z);
       controls.target.copy(camFocus);
       applyCameraOcclusion(dt);
     } else {
@@ -789,9 +847,40 @@ let camDist = 0;
 /** The radius the user last had, frozen while the camera is ducking. */
 let camUserDist = 0;
 let camDucking = false;
+/** Sprung height of the aim point, so the follow is continuous, not rigid. */
+let camFocusY = 0;
+let prevFocusY = 0;
 /** Ring buffer of recent rig distance / eye height / blocked, for diagnosis. */
 const camLog = { dist: new Float32Array(300), y: new Float32Array(300),
                  blocked: new Uint8Array(300), i: 0, n: 0 };
+
+// ------------------------------------------------------------ jump + body --
+/**
+ * Obstacle height by slug, in metres at scale 1: the things a jump is FOR.
+ * Anything not listed is a tree trunk and counts as unjumpable (Infinity) — you
+ * walk around those, which is also what the 2D game does (`stopped before trunk`).
+ */
+const LOW_OBSTACLE = { tree_stump_01: 0.9, tree_stump_02: 0.7, dead_tree_trunk_02: 0.8 };
+/** How wide the character is, for the walk-into-things test. */
+const BODY_RADIUS = 0.34;
+const JUMP_V = 5.9;   // ~1.1 m apex
+const GRAVITY = 16;   // heavier than 9.8: a floaty jump reads as underwater
+let jumpH = 0, vy = 0, airborne = false, jumpQueued = false;
+
+/**
+ * Is (x, z) inside something solid that reaches above `feet`? Obstacles are the
+ * same 2D circles the camera avoids; a jump clears anything whose top sits below
+ * his feet, which is what makes logs, stumps and boulders jumpable and trunks
+ * not. Cheap on purpose: ~500 circles, three candidate positions a frame.
+ */
+function blockedAt(x, z, feet) {
+  for (const o of trunkColliders) {
+    if (o.top <= feet) continue;
+    const dx = x - o.x, dz = z - o.z, rr = o.r + BODY_RADIUS;
+    if (dx * dx + dz * dz < rr * rr) return true;
+  }
+  return false;
+}
 
 function wrapPi(a) {
   return Math.atan2(Math.sin(a), Math.cos(a));
@@ -851,13 +940,13 @@ function applyCameraOcclusion(dt) {
 
   if (blocked) {
     camDucking = true;
-    // Duck in at once (he must never be hidden), ease back out only as far as
-    // the obstacle allows. Absolute distance, not a factor applied to the
-    // current offset: scaling the offset every frame compounded and walked the
-    // camera INTO the trunk.
+    // Continuous, not a snap: the instant jump to the clearance distance was the
+    // one discontinuous thing left in an otherwise smooth rig, and it read as
+    // the camera jerking every time a trunk crossed the line. Fast in (~0.08 s,
+    // so still clear before he can be hidden), slower out (~0.2 s).
     const want = Math.max(1.4, hit - 0.6);
-    camDist = want < camDist ? want
-      : camDist + (want - camDist) * (1 - Math.exp(-4 * dt));
+    const rate = want < camDist ? 12 : 5;
+    camDist += (want - camDist) * (1 - Math.exp(-rate * dt));
   } else if (camDucking) {
     // Time-based ease (~0.2 s), not a per-frame factor: a fixed 0.08/frame takes
     // four times longer to recover at 30 fps than at 120.
@@ -878,8 +967,10 @@ function applyCameraOcclusion(dt) {
   if (camLog.n < camLog.dist.length) camLog.n++;
   if (Math.abs(camDist - len) > 0.01) {
     const scale = camDist / len;
-    const oy = camera.position.y - p.y;
-    camera.position.set(p.x + cx * scale, p.y + Math.max(oy * scale, 0.55), p.z + cz * scale);
+    // Relative to the SPRUNG focus height, not his raw y: on a jump the eye
+    // should stay on its damped arc, not snap to the pulled-in offset.
+    const oy = camera.position.y - camFocusY;
+    camera.position.set(p.x + cx * scale, camFocusY + Math.max(oy * scale, 0.55), p.z + cz * scale);
   }
 }
 
@@ -901,35 +992,62 @@ const SPECIES = [
   // Canopy. The broadleaf island trees replace the karoo/desert species that
   // were standing in for a forest: they are tall, wide and leafy, which is what
   // makes the layer above the player read as jungle.
-  { slug: 'island_tree_01', trunk: 1.0,
-    near: { n: 60, minR: 7.0, maxR: 42, minDist: 6.0, scale: [1.0, 1.5] },
-    far:  { n: 130, minR: 42, maxR: 96, minDist: 7.0, scale: [1.0, 1.5], gate: 0.24 } },
-  { slug: 'island_tree_02', trunk: 1.0,
-    near: { n: 70, minR: 6.5, maxR: 40, minDist: 5.5, scale: [1.0, 1.5] },
-    far:  { n: 140, minR: 40, maxR: 92, minDist: 6.5, scale: [1.0, 1.5], gate: 0.24 } },
-  { slug: 'island_tree_03', trunk: 1.0,
-    near: { n: 55, minR: 7.5, maxR: 44, minDist: 6.5, scale: [1.0, 1.5] },
-    far:  { n: 120, minR: 44, maxR: 98, minDist: 7.5, scale: [1.0, 1.5], gate: 0.24 } },
+  // `emergent` is the same tree planted a second time, sparse and much larger.
+  // A jungle is not one even canopy — a handful of crowns standing well above the
+  // rest is most of what makes the ceiling read as tall — and this costs nothing:
+  // same asset, same instanced draw call, only different instance matrices.
+  // THESE MODELS ARE PHYSICALLY SMALL, and that is why the forest read as a field
+  // with bushes in it: island_tree_01 is 4.98 m tall, island_tree_03 only 2.61 m,
+  // against a 1.82 m character. Measured off the shipped files, not guessed.
+  //
+  // So scale is doing deliberate work here, and it is NON-UNIFORM on purpose:
+  // `scale` is width, `scaleY` is height. A five-times-taller tree does not want a
+  // five-times-thicker trunk — a forest of 2 m-radius trunks is a wall you cannot
+  // walk through — so the trunk radius barely grows while the height does.
+  //
+  // World heights this targets: canopy 12-20 m, emergent layer 18-39 m.
+  { slug: 'island_tree_01', trunk: 0.5,
+    near: { n: 60, minR: 7.0, maxR: 42, minDist: 6.0, scale: [1.6, 2.2], scaleY: [2.9, 4.0] },
+    emergent: { n: 7, minR: 11, maxR: 46, minDist: 15, scale: [2.8, 3.4], scaleY: [5.4, 6.6] },
+    far:  { n: 130, minR: 42, maxR: 96, minDist: 7.0, scale: [1.6, 2.2], scaleY: [2.9, 4.0], gate: 0.24 } },
+  { slug: 'island_tree_02', trunk: 0.45,
+    near: { n: 70, minR: 6.5, maxR: 40, minDist: 5.5, scale: [1.8, 2.5], scaleY: [3.9, 5.4] },
+    emergent: { n: 8, minR: 12, maxR: 44, minDist: 15, scale: [3.0, 3.8], scaleY: [6.4, 8.0] },
+    far:  { n: 140, minR: 40, maxR: 92, minDist: 6.5, scale: [1.8, 2.5], scaleY: [3.9, 5.4], gate: 0.24 } },
+  { slug: 'island_tree_03', trunk: 0.4,
+    near: { n: 55, minR: 7.5, maxR: 44, minDist: 6.5, scale: [1.9, 2.6], scaleY: [4.6, 6.5] },
+    emergent: { n: 7, minR: 12, maxR: 48, minDist: 16, scale: [3.0, 4.0], scaleY: [7.0, 9.0] },
+    far:  { n: 120, minR: 44, maxR: 98, minDist: 7.5, scale: [1.9, 2.6], scaleY: [4.6, 6.5], gate: 0.24 } },
+  // The genuine giant: jacaranda is 19.33 m tall, and the only Poly Haven model
+  // tagged both `jungle` and `tall`. At 1.3-2.0x it forms a 25-39 m ceiling with
+  // 16-23 m crowns, which is what makes the canopy read as tall from underneath.
+  //
+  // `far: null` deliberately. The source is 3.86 M triangles and simplify refuses
+  // to take it below ~27k, so a 128 px far copy cost 1.2 MB and 0.65 M triangles to
+  // say what the island-tree far tier already says at 46+ m.
+  { slug: 'jacaranda_tree', trunk: 0.9,
+    near: { n: 9, minR: 15, maxR: 46, minDist: 16, scale: [0.7, 1.0], scaleY: [1.3, 2.0] },
+    far:  null },
   // Mid-story filler between the trunks. `shadow: false`: only the canopy casts,
   // because the shadow frustum re-renders every near instance each frame and the
   // mid-story's shadows land under the canopy anyway. Saves ~3.6 M triangles.
-  { slug: 'pine_sapling_small', trunk: 0.55, shadow: false,
-    near: { n: 90, minR: 6.5, maxR: 40, minDist: 2.6, scale: [0.9, 2.0] },
-    far:  { n: 200, minR: 40, maxR: 94, minDist: 3.6, scale: [0.9, 2.0], gate: 0.26 } },
-  { slug: 'searsia_lucida', trunk: 0.55, shadow: false,
-    near: { n: 70, minR: 6.0, maxR: 38, minDist: 2.2, scale: [0.9, 1.7] },
-    far:  { n: 160, minR: 38, maxR: 88, minDist: 3.2, scale: [0.9, 1.7], gate: 0.26 } },
-  // Fallen and rotting wood — the "depleted node" states the game needs, and
-  // the debris a real forest floor is full of.
+  { slug: 'pine_sapling_small', trunk: 0.3, shadow: false,
+    near: { n: 90, minR: 6.5, maxR: 40, minDist: 2.6, scale: [1.2, 1.8], scaleY: [3.9, 7.0] },
+    far:  { n: 200, minR: 40, maxR: 94, minDist: 3.6, scale: [1.2, 1.8], scaleY: [3.9, 7.0], gate: 0.26 } },
+  { slug: 'searsia_lucida', trunk: 0.35, shadow: false,
+    near: { n: 70, minR: 6.0, maxR: 38, minDist: 2.2, scale: [1.2, 1.8], scaleY: [2.2, 4.4] },
+    far:  { n: 160, minR: 38, maxR: 88, minDist: 3.2, scale: [1.2, 1.8], scaleY: [2.2, 4.4], gate: 0.26 } },
+  // Fallen and rotting wood — the "depleted node" states the game needs, and the
+  // things the jump is FOR: tops of 0.7-0.9 m, comfortably under a 1.1 m jump.
   { slug: 'tree_stump_01', trunk: 0.7, shadow: false,
-    near: { n: 80, minR: 5.5, maxR: 34, minDist: 3.4, scale: [0.9, 1.3] },
-    far:  { n: 60, minR: 34, maxR: 58, minDist: 5.0, scale: [0.9, 1.3], gate: 0.3 } },
+    near: { n: 80, minR: 5.5, maxR: 34, minDist: 3.4, scale: [1.0, 1.6], scaleY: [1.0, 1.6] },
+    far:  { n: 60, minR: 34, maxR: 58, minDist: 5.0, scale: [1.0, 1.6], scaleY: [1.0, 1.6], gate: 0.3 } },
   { slug: 'tree_stump_02', trunk: 0.8, shadow: false,
-    near: { n: 45, minR: 6.0, maxR: 36, minDist: 5.0, scale: [0.9, 1.4] },
+    near: { n: 45, minR: 6.0, maxR: 36, minDist: 5.0, scale: [1.0, 1.5], scaleY: [1.0, 1.6] },
     far:  null },
   { slug: 'dead_tree_trunk_02', trunk: 0.7, shadow: false,
-    near: { n: 70, minR: 9.0, maxR: 40, minDist: 6.0, scale: [1.0, 1.6] },
-    far:  { n: 60, minR: 40, maxR: 74, minDist: 7.5, scale: [1.0, 1.6], gate: 0.3 } },
+    near: { n: 70, minR: 9.0, maxR: 40, minDist: 6.0, scale: [0.9, 1.2], scaleY: [0.8, 1.2] },
+    far:  { n: 60, minR: 40, maxR: 74, minDist: 7.5, scale: [0.9, 1.2], scaleY: [0.8, 1.2], gate: 0.3 } },
 ];
 
 /**
@@ -953,6 +1071,41 @@ const UNDERSTORY = [
   { slug: 'pachira_aquatica_01',   n: 80,  minR: 5.0, maxR: 26, minDist: 2.2, scale: [0.9, 1.6] },
 ];
 
+/**
+ * Rocks, built in code rather than downloaded. The Poly Haven boulder is 66k
+ * triangles raw and `simplify` would not take it below 54k — 2.4 MB for a rock,
+ * which is exactly the weight problem this prototype just spent a pass fixing.
+ * A displaced icosahedron is ~320 triangles, costs no payload, and reads as the
+ * same wet stone on a dark floor.
+ *
+ * Normalised to 1 m tall so `top` in this table is literally the obstacle height.
+ * Small ones clear a 1.1 m jump; the big ones you walk around, which is right.
+ */
+const ROCKS = [
+  { slug: 'rock', procedural: true, n: 18, minR: 6, maxR: 30, minDist: 4.6,
+    scale: [0.7, 1.5], scaleY: [0.7, 1.5], trunk: 0.7, top: 1.0, shadow: true },
+  { slug: 'rock_moss_set_01', n: 34, minR: 5, maxR: 26, minDist: 2.2,
+    scale: [0.5, 1.1], scaleY: [0.5, 1.1], trunk: 0, top: 0, shadow: false },
+];
+
+/** A boulder-ish blob: icosahedron, noise-displaced, squashed, 1 m tall. */
+function rockGeometry(seed = 0) {
+  const g = new THREE.IcosahedronGeometry(0.5, 1).toNonIndexed();
+  const pos = g.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+    const n = vnoise(x * 4.1 + seed, z * 4.1 - seed) * 0.6 + vnoise(y * 5.3 + seed, x * 3.7) * 0.4;
+    const k = 0.78 + n * 0.5;
+    pos.setXYZ(i, x * k, y * k * 0.86, z * k); // slightly squashed: rocks sit
+  }
+  g.computeVertexNormals();
+  g.computeBoundingBox();
+  const h = Math.max(g.boundingBox.max.y - g.boundingBox.min.y, 0.001);
+  g.scale(1 / h, 1 / h, 1 / h);
+  g.computeBoundingBox();
+  return g;
+}
+
 (async function boot() {
   try {
     const k = LITE_K;
@@ -967,14 +1120,67 @@ const UNDERSTORY = [
     models.forEach((gltf, i) => {
       const s = SPECIES[i];
       const near = scatter(Math.round(s.near.n * k), s.near);
-      // Trunk circles for camera collision (see applyCameraOcclusion).
+      const emergent = s.emergent ? scatter(Math.round(s.emergent.n * k), s.emergent) : [];
+      const placements = emergent.length ? near.concat(emergent) : near;
+      // Solid circles, used twice: the camera must not see through a trunk, and
+      // the character must not walk through one. `top` is how high it reaches,
+      // which is the one thing that decides whether a jump clears it.
+      const low = LOW_OBSTACLE[s.slug];
       if (s.trunk) {
-        for (const pl of near) trunkColliders.push({ x: pl.x, z: pl.z, r: s.trunk * pl.scale });
+        for (const pl of placements) {
+          trunkColliders.push({
+            x: pl.x, z: pl.z,
+            // Trunk radius grows with the cube-ish root of the overall scale, not
+            // linearly: these trees now stand 12-39 m and must still be walkable
+            // between (see SPECIES).
+            r: s.trunk * Math.pow(pl.scale, 0.35),
+            top: low === undefined ? Infinity : low * pl.scale,
+          });
+        }
       }
-      const built = instancedFrom(gltf.scene, near, { castShadow: s.shadow !== false });
+      const built = instancedFrom(gltf.scene, placements, { castShadow: s.shadow !== false });
       scene.add(built.group);
       built.group.userData.treeHeight = built.height;
-      state.species[s.slug] = near.length;
+      // Tallest in metres, measured rather than claimed — this is the number
+      // behind "the forest needs tall trees too", and per species so the tall
+      // layer can be checked rather than eyeballed.
+      let speciesTop = 0;
+      for (const pl of placements) {
+        speciesTop = Math.max(speciesTop, built.height * (pl.sy || pl.scale));
+      }
+      state.speciesHeights = state.speciesHeights || {};
+      state.speciesHeights[s.slug] = +speciesTop.toFixed(1);
+      state.tallest = Math.max(state.tallest || 0, speciesTop);
+      state.species[s.slug] = placements.length;
+    });
+
+    // Rocks in phase 1 too, so the things worth jumping are there from the first
+    // frame rather than appearing under his feet later.
+    const rockModels = await Promise.all(
+      ROCKS.map((r) => (r.procedural ? null : loader.loadAsync(`/assets/trees/${r.slug}.glb`))),
+    );
+    rockModels.forEach((gltf, i) => {
+      const r = ROCKS[i];
+      const spots = scatter(Math.round(r.n * k), r);
+      let source = gltf?.scene;
+      if (r.procedural) {
+        source = new THREE.Group();
+        source.add(new THREE.Mesh(
+          rockGeometry(i + 1),
+          new THREE.MeshStandardMaterial({ color: 0x59604f, roughness: 0.94, metalness: 0 }),
+        ));
+      }
+      const built = instancedFrom(source, spots, { castShadow: r.shadow, tally: 'rocks' });
+      scene.add(built.group);
+      built.group.userData.treeHeight = built.height;
+      if (r.trunk) {
+        for (const pl of spots) {
+          trunkColliders.push({
+            x: pl.x, z: pl.z, r: r.trunk * pl.scale,
+            top: r.top * (pl.sy || pl.scale),
+          });
+        }
+      }
     });
 
     buildUndergrowth();
@@ -993,6 +1199,9 @@ const UNDERSTORY = [
       for (const m of windMats) m.userData.wind.uStrength.value = state.wind ? 0.16 : 0;
       e.target.textContent = `wind: ${state.wind ? 'on' : 'off'}`;
     };
+    // Jump on a button too, not just Space: this has to be usable on a phone.
+    document.getElementById('btn-jump').onclick = () => { jumpQueued = true; };
+
     // Let the rig be detached: orbiting a static scene is sometimes what you
     // want, and the chase rig fights it.
     document.getElementById('toggle-follow').onclick = (e) => {
@@ -1080,6 +1289,7 @@ const UNDERSTORY = [
         ...SPECIES.map((s) => `/assets/trees/${s.slug}.glb`),
         ...SPECIES.filter((s) => s.far).map((s) => `/assets/trees/${s.slug}_far.glb`),
         ...UNDERSTORY.map((s) => `/assets/trees/${s.slug}.glb`),
+        ...ROCKS.filter((r) => !r.procedural).map((r) => `/assets/trees/${r.slug}.glb`),
         '/assets/char/soldier.glb',
       ];
       const heads = await Promise.all(files.map(async (f) => {
