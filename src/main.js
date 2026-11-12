@@ -55,6 +55,8 @@ const el = {
   tris: document.getElementById('tris'),
   trees: document.getElementById('trees'),
   plants: document.getElementById('plants'),
+  ms: document.getElementById('ms'),
+  dpr: document.getElementById('dpr'),
   api: document.getElementById('api'),
   gpuhint: document.getElementById('gpuhint'),
   tex: document.getElementById('tex'),
@@ -100,13 +102,18 @@ function heightAt(x, z) {
 
 // ------------------------------------------------------------ renderer -----
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
-renderer.setPixelRatio(LITE >= 3 ? 0.5 : LITE === 2 ? 0.75 : LITE === 1 ? 1 : Math.min(devicePixelRatio, 2));
+// 2x device pixels is four times the fill work, and this scene is fill-bound at
+// the far end (alpha-tested foliage double-sided, PCF shadows, overdraw). 1.5
+// is the knee: visibly sharper than 1, ~44% cheaper than 2.
+renderer.setPixelRatio(LITE >= 3 ? 0.5 : LITE === 2 ? 0.75 : LITE === 1 ? 1 : Math.min(devicePixelRatio, 1.5));
 renderer.setSize(innerWidth, innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 0.98;
 renderer.shadowMap.enabled = !NO_SHADOWS;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+// PCF, not PCFSoft: the soft variant takes nine-plus taps per fragment, and on a
+// scene this full of alpha-tested leaves that is the dominant fill cost.
+renderer.shadowMap.type = THREE.PCFShadowMap;
 app.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
@@ -167,14 +174,17 @@ scene.fog = new THREE.Fog(0x7f9168, 26, 165);
 const sunDir = new THREE.Vector3(-0.55, 0.48, 0.68).normalize();
 const sun = new THREE.DirectionalLight(0xf0f4d8, 1.9);
 sun.castShadow = true;
-const SHADOW_MAP = LITE >= 3 ? 256 : LITE === 2 ? 512 : LITE === 1 ? 1024 : 2048;
+// 1024 over a 40 m box is ~4 cm per texel — sharper AND cheaper than 2048 over
+// 68 m. The shadow frustum is re-rendered every frame (the player moves), so its
+// size is a direct per-frame cost, not a one-off.
+const SHADOW_MAP = LITE >= 3 ? 256 : LITE === 2 ? 512 : LITE === 1 ? 1024 : 1024;
 sun.shadow.mapSize.set(SHADOW_MAP, SHADOW_MAP);
 sun.shadow.camera.near = 1;
-sun.shadow.camera.far = 140;
-sun.shadow.camera.left = -34;
-sun.shadow.camera.right = 34;
-sun.shadow.camera.top = 34;
-sun.shadow.camera.bottom = -34;
+sun.shadow.camera.far = 90;
+sun.shadow.camera.left = -20;
+sun.shadow.camera.right = 20;
+sun.shadow.camera.top = 20;
+sun.shadow.camera.bottom = -20;
 sun.shadow.bias = -0.0012;
 sun.shadow.normalBias = 0.035;
 scene.add(sun);
@@ -452,8 +462,10 @@ function buildUndergrowth() {
   // Half-again the normal density at every lite level: the floor is what makes
   // the ground read as "forest" instead of "field".
   const k = LITE_K >= 1 ? 1 : Math.max(LITE_K, 0.35);
-  const spots = scatter(Math.round(1100 * k), {
-    minR: 3.0, maxR: 46, minDist: 0.8, tries: 12, gate: 0.16, scale: [0.7, 1.8],
+  // Only a garnish now: the real understory models carry the floor, and every
+  // card here is a double-sided alpha-tested quad (fill cost, no early-Z).
+  const spots = scatter(Math.round(350 * k), {
+    minR: 3.0, maxR: 46, minDist: 1.1, tries: 12, gate: 0.16, scale: [0.7, 1.8],
   });
   const geo = shrubGeometry();
   const mat = new THREE.MeshStandardMaterial({
@@ -605,6 +617,10 @@ function updateHud() {
   el.tris.textContent = renderer.info.render.triangles.toLocaleString();
   el.trees.textContent = String(state.trees);
   el.plants.textContent = String(state.understory || 0);
+  // Frame time in ms, not just fps: at 12 fps it matters a lot whether that is
+  // 83 ms or 400 ms, and it localises the cost to the renderer vs the JS.
+  el.ms.textContent = `${(1000 / Math.max(fpsAvg, 0.01)).toFixed(0)} ms`;
+  el.dpr.textContent = String(renderer.getPixelRatio());
   el.api.textContent = renderer.capabilities.isWebGL2 ? 'WebGL2' : 'WebGL1';
   el.gpuhint.textContent = navigator.gpu ? 'available' : 'no';
   el.tex.textContent = tooltipByteEstimate ? `${(tooltipByteEstimate / 1048576).toFixed(1)} MB` : 'n/a';
@@ -820,22 +836,24 @@ const SPECIES = [
   { slug: 'island_tree_03', trunk: 1.0,
     near: { n: 55, minR: 7.5, maxR: 44, minDist: 6.5, scale: [1.0, 1.5] },
     far:  { n: 120, minR: 44, maxR: 98, minDist: 7.5, scale: [1.0, 1.5], gate: 0.24 } },
-  // Mid-story filler between the trunks.
-  { slug: 'pine_sapling_small', trunk: 0.55,
+  // Mid-story filler between the trunks. `shadow: false`: only the canopy casts,
+  // because the shadow frustum re-renders every near instance each frame and the
+  // mid-story's shadows land under the canopy anyway. Saves ~3.6 M triangles.
+  { slug: 'pine_sapling_small', trunk: 0.55, shadow: false,
     near: { n: 90, minR: 6.5, maxR: 40, minDist: 2.6, scale: [0.9, 2.0] },
     far:  { n: 200, minR: 40, maxR: 94, minDist: 3.6, scale: [0.9, 2.0], gate: 0.26 } },
-  { slug: 'searsia_lucida', trunk: 0.55,
+  { slug: 'searsia_lucida', trunk: 0.55, shadow: false,
     near: { n: 70, minR: 6.0, maxR: 38, minDist: 2.2, scale: [0.9, 1.7] },
     far:  { n: 160, minR: 38, maxR: 88, minDist: 3.2, scale: [0.9, 1.7], gate: 0.26 } },
   // Fallen and rotting wood — the "depleted node" states the game needs, and
   // the debris a real forest floor is full of.
-  { slug: 'tree_stump_01', trunk: 0.7,
+  { slug: 'tree_stump_01', trunk: 0.7, shadow: false,
     near: { n: 80, minR: 5.5, maxR: 34, minDist: 3.4, scale: [0.9, 1.3] },
     far:  { n: 60, minR: 34, maxR: 58, minDist: 5.0, scale: [0.9, 1.3], gate: 0.3 } },
-  { slug: 'tree_stump_02', trunk: 0.8,
+  { slug: 'tree_stump_02', trunk: 0.8, shadow: false,
     near: { n: 45, minR: 6.0, maxR: 36, minDist: 5.0, scale: [0.9, 1.4] },
     far:  null },
-  { slug: 'dead_tree_trunk_02', trunk: 0.7,
+  { slug: 'dead_tree_trunk_02', trunk: 0.7, shadow: false,
     near: { n: 70, minR: 9.0, maxR: 40, minDist: 6.0, scale: [1.0, 1.6] },
     far:  { n: 60, minR: 40, maxR: 74, minDist: 7.5, scale: [1.0, 1.6], gate: 0.3 } },
 ];
@@ -847,12 +865,14 @@ const SPECIES = [
  * `far: null` on a species means it has no cheap LOD and is only planted near.
  */
 const UNDERSTORY = [
-  { slug: 'fern_02',               n: 1000, minR: 2.4, maxR: 44, minDist: 0.9, scale: [0.8, 1.9] },
-  { slug: 'grass_medium_01',       n: 1200, minR: 2.2, maxR: 40, minDist: 0.8, scale: [0.7, 1.8] },
-  { slug: 'shrub_02',              n: 500,  minR: 3.0, maxR: 46, minDist: 1.4, scale: [0.8, 1.7] },
-  { slug: 'calathea_orbifolia_01', n: 600,  minR: 3.0, maxR: 44, minDist: 1.2, scale: [0.8, 1.6] },
-  { slug: 'anthurium_botany_01',   n: 200,  minR: 4.0, maxR: 42, minDist: 2.2, scale: [0.9, 1.5] },
-  { slug: 'pachira_aquatica_01',   n: 120,  minR: 5.0, maxR: 44, minDist: 2.6, scale: [0.9, 1.6] },
+  // Counts trimmed from 3,620: the floor still reads dense, but the understory
+  // was 45% of the scene's triangles and the least visible per triangle spent.
+  { slug: 'fern_02',               n: 700, minR: 2.4, maxR: 40, minDist: 0.9, scale: [0.8, 1.9] },
+  { slug: 'grass_medium_01',       n: 800, minR: 2.2, maxR: 36, minDist: 0.8, scale: [0.7, 1.8] },
+  { slug: 'shrub_02',              n: 320, minR: 3.0, maxR: 42, minDist: 1.4, scale: [0.8, 1.7] },
+  { slug: 'calathea_orbifolia_01', n: 400, minR: 3.0, maxR: 40, minDist: 1.2, scale: [0.8, 1.6] },
+  { slug: 'anthurium_botany_01',   n: 120, minR: 4.0, maxR: 38, minDist: 2.2, scale: [0.9, 1.5] },
+  { slug: 'pachira_aquatica_01',   n: 80,  minR: 5.0, maxR: 40, minDist: 2.6, scale: [0.9, 1.6] },
 ];
 
 (async function boot() {
@@ -871,7 +891,7 @@ const UNDERSTORY = [
       if (s.trunk) {
         for (const pl of near) trunkColliders.push({ x: pl.x, z: pl.z, r: s.trunk * pl.scale });
       }
-      const built = instancedFrom(gltf.scene, near);
+      const built = instancedFrom(gltf.scene, near, { castShadow: s.shadow !== false });
       scene.add(built.group);
       built.group.userData.treeHeight = built.height;
       let farCount = 0;

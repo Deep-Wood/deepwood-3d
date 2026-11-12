@@ -68,55 +68,55 @@ bash scripts/build-trees.sh 0.006 0.05 _far 128  # far LOD: <slug>_far.glb, 128 
 ```
 
 Three layers, because a forest that is dense only at the horizon is not a forest.
-Everything is instanced — the whole scene is ~70 draw calls regardless of count.
+Everything is instanced — the whole scene is 68 draw calls regardless of count
+(the shadow pass adds a handful more at full detail).
 Measured at full density (`npm run build` output, read back off disk):
 
-| layer | instances | triangles | payload |
-|---|---|---|---|
-| canopy, full detail (inside 42 m) | 185 | 3.41 M | 5.80 MB |
-| canopy, far LOD (42-98 m) | 390 | 1.32 M | 1.00 MB |
-| mid-story, full detail | 160 | 3.05 M | 2.90 MB |
-| mid-story, far LOD | 360 | 0.82 M | 0.38 MB |
-| fallen wood | 315 | 0.59 M | 0.89 MB |
-| understory plants | 3,620 | 7.46 M | **0.93 MB** |
-| **total** | **5,030** | **16.6 M** | **14.0 MB** |
+| layer | instances | triangles | payload | casts shadows |
+|---|---|---|---|---|
+| canopy, full detail (inside 42 m) | 185 | 1.72 M | 3.80 MB | yes |
+| canopy, far LOD (42-98 m) | 390 | 1.32 M | 1.00 MB | no |
+| mid-story, full detail | 160 | 1.93 M | 1.99 MB | no |
+| mid-story, far LOD | 360 | 0.82 M | 0.38 MB | no |
+| fallen wood | 195 | 0.53 M | 0.81 MB | no |
+| understory plants | 2,420 | 4.92 M | **0.93 MB** | no |
+| character (placeholder) | 1 | 0.01 M | 2.06 MB | yes |
+| **total** | **3,711** | **11.3 M visible** | **11.0 MB** | |
 
-The far LODs are ~1/7 the triangles with 128 px maps and cast no shadows; the
-understory casts no shadows either (leaves cost more in the shadow pass than they
-add). Scatter radii stop at the far side of the fog so nothing is spent where fog
-paints over it. `?lite=1` renders about 42% of these counts.
+**What decides the frame rate is visible + the shadow pass:** 11.26 M + 3.65 M =
+**14.9 M triangles per frame**. The shadow frustum is re-rendered every frame
+(the player moves), so every shadow caster is paid for twice — which is why only
+the canopy casts. The far LODs are ~1/7 the triangles with 128 px maps; the
+understory is 44% of the visible triangles for 0.93 MB. Scatter radii stop at the
+far side of the fog so nothing is spent where fog paints over it.
+
+Fill rate matters as much as geometry here: pixel ratio is capped at 1.5 (2× is
+four times the work of 1×, and this scene has a lot of double-sided alpha-tested
+foliage — no early-Z), shadows use PCF not PCFSoft, and the shadow frustum is
+40 m. `?lite=1` renders ~42% of these counts, `?lite=2` ~16%.
 
 Runs with `@gltf-transform/cli` (a devDependency). It prints raw vs shipped size
 and the final triangle count per species, so the cost of each step is visible
-rather than asserted. What actually ships (ratio 0.04 / error 0.01):
+rather than asserted (near canopy: ratio 0.006 / error 0.05; far LOD: 0.006 /
+0.05 with 128 px maps):
 
-| model | raw buffer | near set | triangles | far LOD | far triangles |
-|---|---|---|---|---|---|
-| `island_tree_01` | 60.7 MB | 2,041,044 B | 19,131 | 367,000 B | 3,780 |
-| `island_tree_03` | 79.6 MB | 2,493,724 B | 24,909 | 422,000 B | 4,222 |
-| `island_tree_02` | 40.7 MB | 1,545,508 B | 12,687 | 258,000 B | 2,275 |
-| `pine_sapling_small` | 16.9 MB | 1,453,768 B | 15,832 | 215,500 B | 2,318 |
-| `searsia_lucida` | 17.1 MB | 1,590,928 B | 23,231 | 187,560 B | 2,231 |
-| `dead_tree_trunk_02` | 1.9 MB | 348,740 B | 3,324 | 47,572 B | 670 |
-| `tree_stump_01` | 0.9 MB | 334,796 B | 1,641 | 33,444 B | 290 |
-| `fern_02` | 0.2 MB | 64 K | 816 | — | — |
-| `calathea_orbifolia_01` | 0.4 MB | 172 K | 4,021 | — | — |
-| `grass_medium_01` | 1.0 MB | 168 K | 3,735 | — | — |
-| `pachira_aquatica_01` | 2.0 MB | 124 K | 1,590 | — | — |
-| `anthurium_botany_01` | 1.7 MB | 260 K | 4,576 | — | — |
-| `shrub_02` | 0.8 MB | 124 K | 968 | — | — |
-| `soldier.glb` (character) | — | 2,160,468 B | — | — | — |
+Raw scans decimate hard: the canopy `island_tree_01` ships at 9,925 triangles
+from a 1.6 M-triangle / 60.7 MB scan (~1.4 MB GLB), `searsia_lucida` at 7,235
+from 23.2k, `pine_sapling_small` at 15,832 from a 39.8k-triangle / 16.9 MB
+download. The script prints raw vs shipped and the final triangle count per
+species, so the cost of each pass stays visible — run it and read the numbers
+rather than trusting this table, which is the kind of thing that goes stale.
 
-**14.0 MB total** — that is the number the page reports as "asset payload", and
-the whole network cost of the scene. The understory is the cheap half: 3,620
-plants for under 1 MB.
+**11.0 MB total** — the number the page reports as "asset payload", and the whole
+network cost of the scene. The understory is the cheap end: 2,420 plants for
+0.93 MB.
 
 ## What this proves / does not prove
 
-Proves: a browser can hold a skinned character with animation blend trees, 5,030
+Proves: a browser can hold a skinned character with animation blend trees, 3,711
 instanced trees, plants and props with PBR materials, alpha-tested foliage with
-vertex-shader wind, soft shadows and ACES tone mapping — in one WebGL2 frame at
-~70 draw calls, with no engine and no build step beyond Vite.
+vertex-shader wind, shadows and ACES tone mapping — in one WebGL2 frame at 68
+draw calls, with no engine and no build step beyond Vite.
 
 Does **not** prove: photoreal. The look still comes from the asset budget, not
 the renderer. Skinned-mesh count, cloth/hair, IK-driven foot placement,
