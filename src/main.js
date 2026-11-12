@@ -659,13 +659,21 @@ function tick() {
     if (keysDown) {
       move.normalize();
       const yaw = Math.atan2(-move.x, -move.z);
-      character.rotation.y = THREE.MathUtils.lerp(character.rotation.y, character.rotation.y + ((yaw - character.rotation.y + Math.PI * 3) % (Math.PI * 2)) - Math.PI, 0.15);
+      // turnToward is dt-based: a fixed 0.15/frame turns him (and therefore the
+      // whole follow rig) twice as fast at 120 fps as at 60.
+      character.rotation.y += wrapPi(yaw - character.rotation.y) * turnToward(dt);
       gait = (keys.has('ShiftLeft') || keys.has('ShiftRight')) ? 'Run' : 'Walk';
     } else if (gait !== 'Idle') {
-      // Button gait: walk it home and turn it around at the edge of the
-      // clearing instead of walking off into the fog.
-      if (Math.hypot(character.position.x, character.position.z) > 62) {
-        character.rotation.y += Math.PI;
+      // Button gait: steer it home instead of walking off into the fog.
+      //
+      // This used to be `rotation.y += Math.PI` while past 62 m, i.e. a half turn
+      // EVERY FRAME: he spun on the spot, and since the follow rig rotates with
+      // his yaw the camera span with him. A bounded steer toward the origin does
+      // the same job without the whip.
+      const r = Math.hypot(character.position.x, character.position.z);
+      if (r > 62) {
+        const home = Math.atan2(character.position.x, character.position.z); // -Z faces origin
+        character.rotation.y += wrapPi(home - character.rotation.y) * turnToward(dt);
       }
     }
 
@@ -740,9 +748,17 @@ let camDist = 0;
 /** The radius the user last had, frozen while the camera is ducking. */
 let camUserDist = 0;
 let camDucking = false;
+/** Ring buffer of recent rig distance / eye height / blocked, for diagnosis. */
+const camLog = { dist: new Float32Array(300), y: new Float32Array(300),
+                 blocked: new Uint8Array(300), i: 0, n: 0 };
 
 function wrapPi(a) {
   return Math.atan2(Math.sin(a), Math.cos(a));
+}
+
+/** Framerate-independent turn fraction (~0.15 at 60 fps, ~0.25 at 30, same rate). */
+function turnToward(dt) {
+  return 1 - Math.exp(-10 * dt);
 }
 
 /** Rotate the whole rig around the character, so the camera keeps its bearing
@@ -775,22 +791,32 @@ function applyCameraOcclusion(dt) {
   if (!camDucking) camUserDist = len;
   const ux = cx / len, uz = cz / len;
 
-  let hit = len, blocked = false;
+  // Compare against the NOMINAL radius, never the current (already pulled-in)
+  // distance. Testing `t > len` made the rig pump: pull in to 3.4 for a trunk at
+  // 4.0, and on the next frame that trunk reads as "past the camera", so the rig
+  // eased back out, hit 4.0 again, snapped in — a ~3-5 Hz oscillation whenever a
+  // tree stood on the camera line. 0.4 m of hysteresis on the way out.
+  const limit = camUserDist + (camDucking ? 0.4 : 0);
+  let hit = limit, blocked = false;
   for (const o of trunkColliders) {
     const ox = o.x - p.x, oz = o.z - p.z;
     // Projection onto the view ray. It does not move when the camera slides
     // along that ray, so this stays stable as the rig pulls in.
     const t = ox * ux + oz * uz;
-    if (t < 0.9 || t > len) continue;                    // behind him or past the camera
+    if (t < 0.9 || t > limit) continue;                  // behind him or out of range
     if (Math.abs(ox * uz - oz * ux) > o.r + 0.5) continue; // clear of the trunk
     if (t < hit) { hit = t; blocked = true; }
   }
 
   if (blocked) {
     camDucking = true;
-    // Absolute distance, not a factor applied to the current offset: scaling the
-    // offset every frame compounded and walked the camera INTO the trunk.
-    camDist = Math.min(camDist || len, Math.max(1.4, hit - 0.6));
+    // Duck in at once (he must never be hidden), ease back out only as far as
+    // the obstacle allows. Absolute distance, not a factor applied to the
+    // current offset: scaling the offset every frame compounded and walked the
+    // camera INTO the trunk.
+    const want = Math.max(1.4, hit - 0.6);
+    camDist = want < camDist ? want
+      : camDist + (want - camDist) * (1 - Math.exp(-4 * dt));
   } else if (camDucking) {
     // Time-based ease (~0.2 s), not a per-frame factor: a fixed 0.08/frame takes
     // four times longer to recover at 30 fps than at 120.
@@ -802,6 +828,13 @@ function applyCameraOcclusion(dt) {
 
   state.occlusion = { camDist: +camDist.toFixed(2), blocked, ducking: camDucking,
                       userDist: +camUserDist.toFixed(2) };
+  // Ring buffer of the rig's own motion, so "the camera shakes" can be measured
+  // instead of argued about. Allocation-free: reuses one Float32Array.
+  camLog.dist[camLog.i] = camDist;
+  camLog.y[camLog.i] = camera.position.y;
+  camLog.blocked[camLog.i] = blocked ? 1 : 0;
+  camLog.i = (camLog.i + 1) % camLog.dist.length;
+  if (camLog.n < camLog.dist.length) camLog.n++;
   if (Math.abs(camDist - len) > 0.01) {
     const scale = camDist / len;
     const oy = camera.position.y - p.y;
@@ -965,6 +998,7 @@ const UNDERSTORY = [
       e.target.textContent = `follow: ${metro.follow ? 'on' : 'off'}`;
     };
     state.trunkColliders = trunkColliders; // harness hook for the occlusion test
+    state.camLog = camLog;                 // harness hook: rig motion history
 
     // Clear the readout off the scene in one click (or H) when showing it to
     // someone: the stats are for us, the forest is for them.
