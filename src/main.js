@@ -686,7 +686,7 @@ function tick() {
       // pushes him off-centre — worst exactly when he is running.
       camFocus.set(p.x, p.y + 1.15, p.z);
       controls.target.copy(camFocus);
-      applyCameraOcclusion();
+      applyCameraOcclusion(dt);
     } else {
       prevFollow = null;
       camDist = 0;
@@ -747,7 +747,7 @@ function rotateRigAround(p, dyaw) {
  * snapping in immediately (he must never be hidden) and easing back out (no
  * popping when the trunk passes).
  */
-function applyCameraOcclusion() {
+function applyCameraOcclusion(dt) {
   const p = character.position;
   const cx = camera.position.x - p.x, cz = camera.position.z - p.z;
   const len = Math.hypot(cx, cz);
@@ -776,7 +776,9 @@ function applyCameraOcclusion() {
     // offset every frame compounded and walked the camera INTO the trunk.
     camDist = Math.min(camDist || len, Math.max(1.4, hit - 0.6));
   } else if (camDucking) {
-    camDist += (camUserDist - camDist) * 0.08;           // ease back out
+    // Time-based ease (~0.2 s), not a per-frame factor: a fixed 0.08/frame takes
+    // four times longer to recover at 30 fps than at 120.
+    camDist += (camUserDist - camDist) * (1 - Math.exp(-5 * dt));
     if (camUserDist - camDist < 0.05) { camDist = camUserDist; camDucking = false; }
   } else {
     camDist = len;
