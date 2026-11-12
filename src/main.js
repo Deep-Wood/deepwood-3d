@@ -116,7 +116,10 @@ camera.position.set(5.4, 2.9, 7.6);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.06;
-controls.minDistance = 4;
+// Low floor on purpose: the follow rig's occlusion pull-in has to be able to
+// take the camera in past a trunk, and OrbitControls clamps the radius every
+// frame — at 4 m the pull-in was clamped away and fought itself.
+controls.minDistance = 1.2;
 controls.maxDistance = 46;
 controls.maxPolarAngle = Math.PI * 0.495;
 controls.target.set(0, 1.4, 0);
@@ -660,20 +663,35 @@ function tick() {
     }
     setClip(gait);
     if (metro.follow) {
-      // Move the EYE with the character, not just the look target. Lerping only
-      // controls.target pivots the view around a fixed camera, so the player
-      // walks away and shrinks to a dot instead of being followed.
+      // Third-person chase rig, three parts:
+      //   1. translate with him (otherwise he shrinks into the distance),
+      //   2. swing around him by his own turn (otherwise the camera keeps a
+      //      fixed world bearing and he walks sideways out of "tracking"),
+      //   3. pull in when a trunk blocks the line to his chest.
       const p = character.position;
-      if (!prevFollow) prevFollow = p.clone();
+      if (!prevFollow) { prevFollow = p.clone(); prevYaw = character.rotation.y; }
       const dx = p.x - prevFollow.x, dy = p.y - prevFollow.y, dz = p.z - prevFollow.z;
       if (dx || dy || dz) {
         camera.position.x += dx; camera.position.y += dy; camera.position.z += dz;
         controls.target.x += dx; controls.target.y += dy; controls.target.z += dz;
       }
+      const dyaw = wrapPi(character.rotation.y - prevYaw);
+      if (Math.abs(dyaw) > 1e-4) rotateRigAround(p, dyaw);
       prevFollow.copy(p);
-      controls.target.lerp(new THREE.Vector3(p.x, p.y + 1.15, p.z), 0.08);
+      prevYaw = character.rotation.y;
+      state.followDbg = { dyaw: +dyaw.toFixed(4), yaw: +character.rotation.y.toFixed(3) };
+
+      // The rig is rigid, so aim it AT him rather than easing the target toward
+      // him: the eased version let the look point lag up to 2.6 m behind, which
+      // pushes him off-centre — worst exactly when he is running.
+      camFocus.set(p.x, p.y + 1.15, p.z);
+      controls.target.copy(camFocus);
+      applyCameraOcclusion();
     } else {
       prevFollow = null;
+      camDist = 0;
+      camUserDist = 0;
+      camDucking = false;
     }
     // keep the shadow frustum on the player
     sun.position.copy(character.position).addScaledVector(sunDir, 60);
@@ -688,8 +706,90 @@ function tick() {
   requestAnimationFrame(tick);
 }
 const metro = { follow: true };
-/** Previous character position for the follow rig (see the tick). */
+
+// ------------------------------------------------------------ follow rig ----
+/** Previous character position + heading for the follow rig (see the tick). */
 let prevFollow = null;
+let prevYaw = 0;
+const camFocus = new THREE.Vector3();
+
+/**
+ * Trunks the camera must not see through, as 2D circles. Deliberately not
+ * geometry: this runs every frame and the real alternative — a raycast against
+ * ~1,300 instances of 20k-triangle trees — is orders of magnitude too slow.
+ */
+const trunkColliders = [];
+/** Rig distance while something is in the way; 0 = adopt the user's. */
+let camDist = 0;
+/** The radius the user last had, frozen while the camera is ducking. */
+let camUserDist = 0;
+let camDucking = false;
+
+function wrapPi(a) {
+  return Math.atan2(Math.sin(a), Math.cos(a));
+}
+
+/** Rotate the whole rig around the character, so the camera keeps its bearing
+ *  RELATIVE to him: he turns a corner, the camera swings behind his shoulder. */
+function rotateRigAround(p, dyaw) {
+  const c = Math.cos(dyaw), s = Math.sin(dyaw);
+  const spin = (v) => {
+    const ox = v.x - p.x, oz = v.z - p.z;
+    v.x = p.x + ox * c + oz * s;
+    v.z = p.z - ox * s + oz * c;
+  };
+  spin(camera.position);
+  spin(controls.target);
+}
+
+/**
+ * Camera collision. Pulls the camera in until the line to his chest is clear,
+ * snapping in immediately (he must never be hidden) and easing back out (no
+ * popping when the trunk passes).
+ */
+function applyCameraOcclusion() {
+  const p = character.position;
+  const cx = camera.position.x - p.x, cz = camera.position.z - p.z;
+  const len = Math.hypot(cx, cz);
+  if (len < 0.001 || !trunkColliders.length) return;
+
+  // While nothing is in the way the current radius IS the user's choice; while
+  // ducking under something it has to be REMEMBERED. Re-reading it each frame
+  // made the pull-in permanent: the ease-out target was the pulled-in distance.
+  if (!camDucking) camUserDist = len;
+  const ux = cx / len, uz = cz / len;
+
+  let hit = len, blocked = false;
+  for (const o of trunkColliders) {
+    const ox = o.x - p.x, oz = o.z - p.z;
+    // Projection onto the view ray. It does not move when the camera slides
+    // along that ray, so this stays stable as the rig pulls in.
+    const t = ox * ux + oz * uz;
+    if (t < 0.9 || t > len) continue;                    // behind him or past the camera
+    if (Math.abs(ox * uz - oz * ux) > o.r + 0.5) continue; // clear of the trunk
+    if (t < hit) { hit = t; blocked = true; }
+  }
+
+  if (blocked) {
+    camDucking = true;
+    // Absolute distance, not a factor applied to the current offset: scaling the
+    // offset every frame compounded and walked the camera INTO the trunk.
+    camDist = Math.min(camDist || len, Math.max(1.4, hit - 0.6));
+  } else if (camDucking) {
+    camDist += (camUserDist - camDist) * 0.08;           // ease back out
+    if (camUserDist - camDist < 0.05) { camDist = camUserDist; camDucking = false; }
+  } else {
+    camDist = len;
+  }
+
+  state.occlusion = { camDist: +camDist.toFixed(2), blocked, ducking: camDucking,
+                      userDist: +camUserDist.toFixed(2) };
+  if (Math.abs(camDist - len) > 0.01) {
+    const scale = camDist / len;
+    const oy = camera.position.y - p.y;
+    camera.position.set(p.x + cx * scale, p.y + Math.max(oy * scale, 0.55), p.z + cz * scale);
+  }
+}
 
 // ------------------------------------------------------------------ boot ---
 /**
@@ -709,31 +809,31 @@ const SPECIES = [
   // Canopy. The broadleaf island trees replace the karoo/desert species that
   // were standing in for a forest: they are tall, wide and leafy, which is what
   // makes the layer above the player read as jungle.
-  { slug: 'island_tree_01',
+  { slug: 'island_tree_01', trunk: 1.0,
     near: { n: 60, minR: 7.0, maxR: 42, minDist: 6.0, scale: [1.0, 1.5] },
     far:  { n: 130, minR: 42, maxR: 96, minDist: 7.0, scale: [1.0, 1.5], gate: 0.24 } },
-  { slug: 'island_tree_02',
+  { slug: 'island_tree_02', trunk: 1.0,
     near: { n: 70, minR: 6.5, maxR: 40, minDist: 5.5, scale: [1.0, 1.5] },
     far:  { n: 140, minR: 40, maxR: 92, minDist: 6.5, scale: [1.0, 1.5], gate: 0.24 } },
-  { slug: 'island_tree_03',
+  { slug: 'island_tree_03', trunk: 1.0,
     near: { n: 55, minR: 7.5, maxR: 44, minDist: 6.5, scale: [1.0, 1.5] },
     far:  { n: 120, minR: 44, maxR: 98, minDist: 7.5, scale: [1.0, 1.5], gate: 0.24 } },
   // Mid-story filler between the trunks.
-  { slug: 'pine_sapling_small',
+  { slug: 'pine_sapling_small', trunk: 0.55,
     near: { n: 90, minR: 6.5, maxR: 40, minDist: 2.6, scale: [0.9, 2.0] },
     far:  { n: 200, minR: 40, maxR: 94, minDist: 3.6, scale: [0.9, 2.0], gate: 0.26 } },
-  { slug: 'searsia_lucida',
+  { slug: 'searsia_lucida', trunk: 0.55,
     near: { n: 70, minR: 6.0, maxR: 38, minDist: 2.2, scale: [0.9, 1.7] },
     far:  { n: 160, minR: 38, maxR: 88, minDist: 3.2, scale: [0.9, 1.7], gate: 0.26 } },
   // Fallen and rotting wood — the "depleted node" states the game needs, and
   // the debris a real forest floor is full of.
-  { slug: 'tree_stump_01',
+  { slug: 'tree_stump_01', trunk: 0.7,
     near: { n: 80, minR: 5.5, maxR: 34, minDist: 3.4, scale: [0.9, 1.3] },
     far:  { n: 60, minR: 34, maxR: 58, minDist: 5.0, scale: [0.9, 1.3], gate: 0.3 } },
-  { slug: 'tree_stump_02',
+  { slug: 'tree_stump_02', trunk: 0.8,
     near: { n: 45, minR: 6.0, maxR: 36, minDist: 5.0, scale: [0.9, 1.4] },
     far:  null },
-  { slug: 'dead_tree_trunk_02',
+  { slug: 'dead_tree_trunk_02', trunk: 0.7,
     near: { n: 70, minR: 9.0, maxR: 40, minDist: 6.0, scale: [1.0, 1.6] },
     far:  { n: 60, minR: 40, maxR: 74, minDist: 7.5, scale: [1.0, 1.6], gate: 0.3 } },
 ];
@@ -765,6 +865,10 @@ const UNDERSTORY = [
     models.forEach((gltf, i) => {
       const s = SPECIES[i];
       const near = scatter(Math.round(s.near.n * k), s.near);
+      // Trunk circles for camera collision (see applyCameraOcclusion).
+      if (s.trunk) {
+        for (const pl of near) trunkColliders.push({ x: pl.x, z: pl.z, r: s.trunk * pl.scale });
+      }
       const built = instancedFrom(gltf.scene, near);
       scene.add(built.group);
       built.group.userData.treeHeight = built.height;
@@ -832,6 +936,14 @@ const UNDERSTORY = [
       for (const m of windMats) m.userData.wind.uStrength.value = state.wind ? 0.16 : 0;
       e.target.textContent = `wind: ${state.wind ? 'on' : 'off'}`;
     };
+    // Let the rig be detached: orbiting a static scene is sometimes what you
+    // want, and the chase rig fights it.
+    document.getElementById('toggle-follow').onclick = (e) => {
+      metro.follow = !metro.follow;
+      e.target.textContent = `follow: ${metro.follow ? 'on' : 'off'}`;
+    };
+    state.trunkColliders = trunkColliders; // harness hook for the occlusion test
+
     // Clear the readout off the scene in one click (or H) when showing it to
     // someone: the stats are for us, the forest is for them.
     const hudEl = document.getElementById('hud');
