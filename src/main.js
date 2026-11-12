@@ -37,16 +37,55 @@ window.__proto3d = state;
 window.addEventListener('error', (e) => state.errors.push(String(e.message)));
 window.addEventListener('unhandledrejection', (e) => state.errors.push(String(e.reason?.message || e.reason)));
 
-/** Detail level from ?lite=N — ?lite=1 for weak devices, ?lite=2 to shrink the
- *  scene far enough for headless software-raster verification on a GPU-less
- *  box (where 6M triangles a frame takes tens of seconds). */
-const LITE = Number(new URLSearchParams(location.search).get('lite') || 0);
-const LITE_K = LITE >= 3 ? 0.05 : LITE === 2 ? 0.16 : LITE === 1 ? 0.42 : 1;
+// ---------------------------------------------------------------- quality ---
+/**
+ * LIGHT BY DEFAULT, heavy on request.
+ *
+ * This scene started as a feasibility prototype and was tuned for a discrete
+ * GPU: 11 M triangles, shadows re-rendering every caster each frame, 2× device
+ * pixels. That is a fine answer to "can the web carry this" and a bad answer to
+ * "run it on my laptop" — so the default is now the profile that runs anywhere,
+ * and `?full` opts back into the heavy one. `?lite=1..3` still steps down for
+ * weak devices (and `?lite=3` exists for automated runs on a GPU-less box, where
+ * a single full frame starves the JS thread and times the harness out).
+ *
+ *   k           instance counts: near trees, far LODs, understory plants
+ *   dpr         pixel ratio cap — 2× is FOUR times the fill work of 1×
+ *   msaa        antialias; costly here, because alpha-tested foliage defeats
+ *               early-Z and this scene is full of it
+ *   shadow      shadow map size, 0 = no shadows at all
+ *   shadowHalf  shadow frustum half-width in metres. It re-renders every caster
+ *               every frame (the player moves), so this is a per-frame cost
+ *   fog         [near, far] — also the depth at which counting trees stops
+ *   farCap      furthest radius any LOD tier is scattered to
+ */
+const PROFILES = {
+  // k = 0.5, not 0.3: at 0.3 the clearing read as a bare field with a thin
+  // treeline, which is exactly the complaint that started the density work. The
+  // assets are decimated hard enough now (grass 3,260 -> 676 triangles, pine
+  // 15,832 -> 7,495) that half the previous instance count costs about what the
+  // sparse version did — density is the cheapest thing to buy back.
+  light: { k: 0.50, dpr: 1.0,  msaa: false, shadow: 512,  shadowHalf: 16, seg: 160,
+           fog: [24, 150], farCap: 80,       label: 'light (default)' },
+  full:  { k: 1.00, dpr: 1.5,  msaa: true,  shadow: 1024, shadowHalf: 20, seg: 240,
+           fog: [26, 165], farCap: Infinity, label: 'full (?full)' },
+  lite1: { k: 0.30, dpr: 0.85, msaa: false, shadow: 512,  shadowHalf: 12, seg: 120,
+           fog: [20, 110], farCap: 65,       label: 'lite 1' },
+  lite2: { k: 0.15, dpr: 0.7,  msaa: false, shadow: 0,    shadowHalf: 10, seg: 90,
+           fog: [16, 85],  farCap: 52,       label: 'lite 2' },
+  lite3: { k: 0.05, dpr: 0.5,  msaa: false, shadow: 0,    shadowHalf: 8,  seg: 48,
+           fog: [12, 70],  farCap: 45,       label: 'lite 3 (automation)' },
+};
+const params = new URLSearchParams(location.search);
+const hasLite = params.has('lite');
+const LITE = hasLite ? Number(params.get('lite')) : NaN;
+const Q = params.has('full') || LITE === 0 ? PROFILES.full
+  : hasLite ? (PROFILES[`lite${Math.max(1, Math.min(3, LITE || 1))}`] || PROFILES.lite2)
+  : PROFILES.light;
+const LITE_K = Q.k;
+const NO_SHADOWS = Q.shadow === 0;
 state.lite = LITE;
-// ?lite=3 is for automated runs only: a software rasteriser (no GPU) can spend
-// seconds on a single full-quality frame, which starves the JS thread and makes
-// the harness time out before it can assert anything.
-const NO_SHADOWS = LITE >= 3;
+state.profile = Q.label;
 
 const app = document.getElementById('app');
 const el = {
@@ -55,6 +94,7 @@ const el = {
   tris: document.getElementById('tris'),
   trees: document.getElementById('trees'),
   plants: document.getElementById('plants'),
+  profile: document.getElementById('profile'),
   ms: document.getElementById('ms'),
   dpr: document.getElementById('dpr'),
   api: document.getElementById('api'),
@@ -101,11 +141,11 @@ function heightAt(x, z) {
 }
 
 // ------------------------------------------------------------ renderer -----
-const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
-// 2x device pixels is four times the fill work, and this scene is fill-bound at
-// the far end (alpha-tested foliage double-sided, PCF shadows, overdraw). 1.5
-// is the knee: visibly sharper than 1, ~44% cheaper than 2.
-renderer.setPixelRatio(LITE >= 3 ? 0.5 : LITE === 2 ? 0.75 : LITE === 1 ? 1 : Math.min(devicePixelRatio, 1.5));
+const renderer = new THREE.WebGLRenderer({ antialias: Q.msaa, powerPreference: 'high-performance' });
+// Capped by the profile. 2x device pixels is four times the fill work of 1x, and
+// this scene is fill-bound at the far end (double-sided alpha-tested foliage,
+// PCF shadows, overdraw), so paying it by default was the wrong trade.
+renderer.setPixelRatio(Math.min(devicePixelRatio, Q.dpr));
 renderer.setSize(innerWidth, innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -167,7 +207,7 @@ const sky = new THREE.Mesh(new THREE.SphereGeometry(320, 32, 16), skyMat);
 scene.add(sky);
 // Canopy haze: green and fairly close, so distance reads as humid jungle depth.
 // Not TOO close — fog this dense over a thin forest just looks like empty ground.
-scene.fog = new THREE.Fog(0x7f9168, 26, 165);
+scene.fog = new THREE.Fog(0x7f9168, Q.fog[0], Q.fog[1]);
 
 // --------------------------------------------------------------- lights ----
 // Sun behind-left of the default camera so the character reads front-lit.
@@ -177,14 +217,14 @@ sun.castShadow = true;
 // 1024 over a 40 m box is ~4 cm per texel — sharper AND cheaper than 2048 over
 // 68 m. The shadow frustum is re-rendered every frame (the player moves), so its
 // size is a direct per-frame cost, not a one-off.
-const SHADOW_MAP = LITE >= 3 ? 256 : LITE === 2 ? 512 : LITE === 1 ? 1024 : 1024;
+const SHADOW_MAP = Q.shadow || 256;
 sun.shadow.mapSize.set(SHADOW_MAP, SHADOW_MAP);
 sun.shadow.camera.near = 1;
-sun.shadow.camera.far = 90;
-sun.shadow.camera.left = -20;
-sun.shadow.camera.right = 20;
-sun.shadow.camera.top = 20;
-sun.shadow.camera.bottom = -20;
+sun.shadow.camera.far = Q.shadowHalf * 4.5;
+sun.shadow.camera.left = -Q.shadowHalf;
+sun.shadow.camera.right = Q.shadowHalf;
+sun.shadow.camera.top = Q.shadowHalf;
+sun.shadow.camera.bottom = -Q.shadowHalf;
 sun.shadow.bias = -0.0012;
 sun.shadow.normalBias = 0.035;
 scene.add(sun);
@@ -204,7 +244,7 @@ scene.add(fireLight);
 
 // -------------------------------------------------------------- terrain ----
 const GROUND = 340;
-const SEG = LITE >= 3 ? 48 : LITE === 2 ? 90 : LITE === 1 ? 140 : 240;
+const SEG = Q.seg;
 const groundGeo = new THREE.PlaneGeometry(GROUND, GROUND, SEG, SEG);
 groundGeo.rotateX(-Math.PI / 2);
 {
@@ -621,13 +661,14 @@ function updateHud() {
   // 83 ms or 400 ms, and it localises the cost to the renderer vs the JS.
   el.ms.textContent = `${(1000 / Math.max(fpsAvg, 0.01)).toFixed(0)} ms`;
   el.dpr.textContent = String(renderer.getPixelRatio());
+  el.profile.textContent = state.profile;
   el.api.textContent = renderer.capabilities.isWebGL2 ? 'WebGL2' : 'WebGL1';
   el.gpuhint.textContent = navigator.gpu ? 'available' : 'no';
   el.tex.textContent = tooltipByteEstimate ? `${(tooltipByteEstimate / 1048576).toFixed(1)} MB` : 'n/a';
   // Short on purpose: this used to be one long sentence that stretched the
   // panel across half the screen because the panel had no width cap.
-  el.perf.textContent = fpsAvg < 25
-    ? `⚠ ${fpsAvg.toFixed(1)} fps — software raster (no GPU). On a real GPU: try ?lite=1 if it stays low.`
+  el.perf.textContent = fpsAvg < 30
+    ? `⚠ ${fpsAvg.toFixed(1)} fps — try ?lite=1 (lighter) · ?full for full detail.`
     : '';
 }
 
@@ -900,22 +941,28 @@ const SPECIES = [
 const UNDERSTORY = [
   // Counts trimmed from 3,620: the floor still reads dense, but the understory
   // was 45% of the scene's triangles and the least visible per triangle spent.
-  { slug: 'fern_02',               n: 700, minR: 2.4, maxR: 40, minDist: 0.9, scale: [0.8, 1.9] },
-  { slug: 'grass_medium_01',       n: 800, minR: 2.2, maxR: 36, minDist: 0.8, scale: [0.7, 1.8] },
-  { slug: 'shrub_02',              n: 320, minR: 3.0, maxR: 42, minDist: 1.4, scale: [0.8, 1.7] },
-  { slug: 'calathea_orbifolia_01', n: 400, minR: 3.0, maxR: 40, minDist: 1.2, scale: [0.8, 1.6] },
-  { slug: 'anthurium_botany_01',   n: 120, minR: 4.0, maxR: 38, minDist: 2.2, scale: [0.9, 1.5] },
-  { slug: 'pachira_aquatica_01',   n: 80,  minR: 5.0, maxR: 40, minDist: 2.6, scale: [0.9, 1.6] },
+  // Radii pulled in from 36-42 m to 24-28 m: the fog starts at 24 m, so the
+  // outer half of these plants were being planted only to be painted out. The
+  // same instance count over a smaller disc is density where the camera is, for
+  // no extra triangles — the same trick as farCap, applied to the floor.
+  { slug: 'fern_02',               n: 700, minR: 2.4, maxR: 26, minDist: 0.7, scale: [0.8, 1.9] },
+  { slug: 'grass_medium_01',       n: 800, minR: 2.2, maxR: 24, minDist: 0.6, scale: [0.7, 1.8] },
+  { slug: 'shrub_02',              n: 320, minR: 3.0, maxR: 28, minDist: 1.1, scale: [0.8, 1.7] },
+  { slug: 'calathea_orbifolia_01', n: 400, minR: 3.0, maxR: 26, minDist: 1.0, scale: [0.8, 1.6] },
+  { slug: 'anthurium_botany_01',   n: 120, minR: 4.0, maxR: 24, minDist: 1.8, scale: [0.9, 1.5] },
+  { slug: 'pachira_aquatica_01',   n: 80,  minR: 5.0, maxR: 26, minDist: 2.2, scale: [0.9, 1.6] },
 ];
 
 (async function boot() {
   try {
     const k = LITE_K;
-    const [models, farModels, under] = await Promise.all([
-      Promise.all(SPECIES.map((s) => loader.loadAsync(`/assets/trees/${s.slug}.glb`))),
-      Promise.all(SPECIES.map((s) => (s.far ? loader.loadAsync(`/assets/trees/${s.slug}_far.glb`) : null))),
-      Promise.all(UNDERSTORY.map((s) => loader.loadAsync(`/assets/trees/${s.slug}.glb`))),
-    ]);
+
+    // ---- phase 1: everything the first picture needs -------------------------
+    // The trees around the camp and the character. Distant LODs and the jungle
+    // floor load AFTER the first frame is on screen (phase 2, at the bottom), so
+    // the scene is interactive in ~8.7 MB instead of waiting on the full ~11 MB,
+    // and the decode cost is spread instead of landing as one main-thread freeze.
+    const models = await Promise.all(SPECIES.map((s) => loader.loadAsync(`/assets/trees/${s.slug}.glb`)));
     state.species = {};
     models.forEach((gltf, i) => {
       const s = SPECIES[i];
@@ -927,53 +974,8 @@ const UNDERSTORY = [
       const built = instancedFrom(gltf.scene, near, { castShadow: s.shadow !== false });
       scene.add(built.group);
       built.group.userData.treeHeight = built.height;
-      let farCount = 0;
-      if (farModels[i]) {
-        const far = scatter(Math.round(s.far.n * k), s.far);
-        const builtFar = instancedFrom(farModels[i].scene, far, { castShadow: false });
-        scene.add(builtFar.group);
-        builtFar.group.userData.treeHeight = builtFar.height;
-        farCount = far.length;
-      }
-      state.species[s.slug] = near.length + farCount;
+      state.species[s.slug] = near.length;
     });
-
-    // Jungle floor: instanced plants, no shadow casting, tallied separately so
-    // the HUD can show the two layers apart.
-    under.forEach((gltf, i) => {
-      const u = UNDERSTORY[i];
-      const spots = scatter(Math.round(u.n * k), u);
-      const built = instancedFrom(gltf.scene, spots, { castShadow: false, tally: 'understory' });
-      scene.add(built.group);
-      built.group.userData.treeHeight = built.height;
-    });
-
-    // Asset budget: HEAD the shipped files and sum the real Content-Length.
-    // performance resource timings report 0 for cached/opaque responses, which
-    // would print a fake "0 MB"; this is the number a phone actually pulls.
-    const files = [
-      ...SPECIES.map((s) => `/assets/trees/${s.slug}.glb`),
-      ...SPECIES.filter((s) => s.far).map((s) => `/assets/trees/${s.slug}_far.glb`),
-      ...UNDERSTORY.map((s) => `/assets/trees/${s.slug}.glb`),
-      '/assets/char/soldier.glb',
-    ];
-    const heads = await Promise.all(files.map(async (f) => {
-      try {
-        const r = await fetch(f, { method: 'HEAD' });
-        const n = Number(r.headers.get('content-length') || 0);
-        if (n) return n;
-      } catch { /* fall through to a measured read */ }
-      try {
-        // Vercel omits content-length on HEAD responses, and headless Chrome
-        // does not populate resource timings, so metadata alone reports 0.
-        // Measure the response instead: the loader just downloaded these GLBs,
-        // so force-cache reuses that entry rather than fetching a second copy.
-        const r = await fetch(f, { cache: 'force-cache' });
-        return (await r.arrayBuffer()).byteLength;
-      } catch { return 0; }
-    }));
-    state.texBytes = tooltipByteEstimate = heads.reduce((a, b) => a + b, 0);
-    state.assetBytes = Object.fromEntries(files.map((f, i) => [f.split('/').pop(), heads[i]]));
 
     buildUndergrowth();
 
@@ -1037,6 +1039,70 @@ const UNDERSTORY = [
     el.loading.classList.add('hidden');
     state.ready = true;
     requestAnimationFrame(tick);
+
+    // ---- phase 2: the far side of the forest and the jungle floor -----------
+    // Deliberately after the first frame: the player is looking at a forest while
+    // these stream in, rather than at a progress bar. Its own try/catch, because
+    // a missing LOD tier is a note in the error list, not a failed load — the
+    // scene is already up and playable at this point.
+    try {
+      const [farModels, under] = await Promise.all([
+        Promise.all(SPECIES.map((s) => (s.far ? loader.loadAsync(`/assets/trees/${s.slug}_far.glb`) : null))),
+        Promise.all(UNDERSTORY.map((s) => loader.loadAsync(`/assets/trees/${s.slug}.glb`))),
+      ]);
+      farModels.forEach((gltf, i) => {
+        if (!gltf) return;
+        const s = SPECIES[i];
+        // farCap stops the LOD tiers at the far side of the fog: past that they
+        // are painted over, and in the light profile they are not planted at all.
+        const farCfg = { ...s.far, maxR: Math.min(s.far.maxR, Q.farCap) };
+        const far = scatter(Math.round(s.far.n * k), farCfg);
+        const builtFar = instancedFrom(gltf.scene, far, { castShadow: false });
+        scene.add(builtFar.group);
+        builtFar.group.userData.treeHeight = builtFar.height;
+        state.species[s.slug] = (state.species[s.slug] || 0) + far.length;
+      });
+
+      // Jungle floor: instanced plants, no shadow casting, tallied separately so
+      // the HUD can show the two layers apart.
+      under.forEach((gltf, i) => {
+        const u = UNDERSTORY[i];
+        const spots = scatter(Math.round(u.n * k), u);
+        const built = instancedFrom(gltf.scene, spots, { castShadow: false, tally: 'understory' });
+        scene.add(built.group);
+        built.group.userData.treeHeight = built.height;
+      });
+
+      // Asset budget: HEAD the shipped files and sum the real Content-Length.
+      // performance resource timings report 0 for cached/opaque responses, which
+      // would print a fake "0 MB"; this is the number a phone actually pulls.
+      const files = [
+        ...SPECIES.map((s) => `/assets/trees/${s.slug}.glb`),
+        ...SPECIES.filter((s) => s.far).map((s) => `/assets/trees/${s.slug}_far.glb`),
+        ...UNDERSTORY.map((s) => `/assets/trees/${s.slug}.glb`),
+        '/assets/char/soldier.glb',
+      ];
+      const heads = await Promise.all(files.map(async (f) => {
+        try {
+          const r = await fetch(f, { method: 'HEAD' });
+          const n = Number(r.headers.get('content-length') || 0);
+          if (n) return n;
+        } catch { /* fall through to a measured read */ }
+        try {
+          // Vercel omits content-length on HEAD responses, and headless Chrome
+          // does not populate resource timings, so metadata alone reports 0.
+          // Measure the response instead: the loader just downloaded these GLBs,
+          // so force-cache reuses that entry rather than fetching a second copy.
+          const r = await fetch(f, { cache: 'force-cache' });
+          return (await r.arrayBuffer()).byteLength;
+        } catch { return 0; }
+      }));
+      state.texBytes = tooltipByteEstimate = heads.reduce((a, b) => a + b, 0);
+      state.assetBytes = Object.fromEntries(files.map((f, i) => [f.split('/').pop(), heads[i]]));
+      state.phase2 = true;
+    } catch (err) {
+      state.errors.push(`phase 2: ${err?.message || err}`);
+    }
   } catch (err) {
     state.errors.push(`boot: ${err?.message || err}\n${err?.stack || ''}`);
     el.loading.innerHTML = `<div style="text-align:center;color:#ff8a7a">load failed:<br>${err?.message || err}</div>`;

@@ -21,18 +21,37 @@ npm run dev            # http://localhost:5174
 npm run dev -- --open
 ```
 
-Detail ladder via `?lite=N`:
+## Quality profiles — **light by default**
 
-| level | pixel ratio | shadow map | trees | terrain | use |
-|---|---|---|---|---|---|
-| (none) | up to 2 | 2048 | 100% (~410) | 240² | real GPUs — the one to judge the look on |
-| `1` | 1 | 1024 | ~42% | 140² | weak laptops and phones |
-| `2` | 0.75 | 512 | ~16% | 90² | light devices, screenshots |
-| `3` | 0.5 | off | ~5% | 48² | automated runs on GPU-less boxes only |
+This started as a feasibility spike tuned for a discrete GPU, which is a bad
+default for a link someone will actually open: it cost 15 M triangles a frame and
+a 2× pixel ratio. It is now **light by default**, with the heavy version opt-in.
 
-Level 3 exists because a software rasteriser can spend seconds on one
-full-quality frame, which starves the JS thread and makes a test harness time
-out before it can assert anything.
+| profile | URL | instances | pixel ratio | MSAA | shadows | visibility |
+|---|---|---|---|---|---|---|
+| **light (default)** | `/` | 50% | 1× | off | 512 map, 32 m box | fog 24-150 m, LODs to 80 m |
+| full | `?full` | 100% | 1.5× | on | 1024 map, 40 m box | fog 26-165 m, LODs to 98 m |
+| lite 1 | `?lite=1` | 30% | 0.85× | off | 512 map, 24 m box | fog 20-110 m |
+| lite 2 | `?lite=2` | 15% | 0.7× | off | none | fog 16-85 m |
+| lite 3 | `?lite=3` | 5% | 0.5× | off | none | fog 12-70 m — automated runs only |
+
+Measured on the built site by reading it off the HUD: **default 706 trees, 1,210
+plants, 4.93 M triangles a frame, 68 draw calls, 1× pixel ratio, no MSAA**;
+`?full` 1,387 trees / 2,420 plants / 9.67 M triangles a frame.
+
+The per-frame triangle figure counts every pass, including the shadow pass
+(three.js accumulates it in `renderer.info`) — which is why it is larger than the
+visible-triangle column below.
+
+Level 3 exists because a software rasteriser can spend seconds on one frame,
+which starves the JS thread and makes a test harness time out before it can
+assert anything. It is not for people.
+
+**First paint does not wait for everything.** The trees around the camp and the
+character load first (~8.3 MB); the distant LODs and the jungle floor load after
+the first frame is on screen (~2.5 MB more) and appear as they arrive. Same total
+bytes, but the scene is interactive in the smaller number and the decode cost is
+spread instead of landing as one freeze.
 
 ## What is real here (not primitives)
 
@@ -40,12 +59,12 @@ out before it can assert anything.
 |---|---|---|
 | Character | `soldier.glb`, three.js sample assets | 68-bone Mixamo rig, 2 skinned meshes, clips **Idle / Walk / Run / TPose**. **Placeholder** — swap for licensed art. |
 | Tool | built in code | pickaxe parented to the `mixamorig:RightHand` bone — the same "attach to socket" pattern a real tool model would use. |
-| Canopy trees | Poly Haven, **CC0** | `island_tree_01/02/03` — tall broadleaf trees, 12.7-24.9k triangles each, two LOD tiers. |
+| Canopy trees | Poly Haven, **CC0** | `island_tree_01/02/03` — tall broadleaf trees, 6.4-12.4k triangles each, two LOD tiers. |
 | Mid-story trees | Poly Haven, **CC0** | `pine_sapling_small`, `searsia_lucida` filling the space between trunks. |
-| Understory | Poly Haven, **CC0** | `fern_02`, `calathea_orbifolia_01`, `anthurium_botany_01`, `pachira_aquatica_01`, `shrub_02`, `grass_medium_01` — real plants, ~0.8-4.6k triangles each, planted by the thousand. |
+| Understory | Poly Haven, **CC0** | `fern_02`, `calathea_orbifolia_01`, `anthurium_botany_01`, `pachira_aquatica_01`, `shrub_02`, `grass_medium_01` — real plants, 320-2,602 triangles each, planted by the thousand. |
 | Fallen wood | Poly Haven, **CC0** | `tree_stump_01`, `tree_stump_02`, `dead_tree_trunk_02` — the game's "depleted node" states, and real forest-floor debris. |
 | Tree materials | Poly Haven, **CC0** | real PBR sets: baseColor + normal + packed metallicRoughness/AO, 512 px near / 128 px far. |
-| Terrain, sky, sun, fog, camp | procedural | humid-overcast sky, canopy haze fog, dark humus floor, ACES tone mapping, PCF soft shadows. |
+| Terrain, sky, sun, fog, camp | procedural | humid-overcast sky, canopy haze fog, dark humus floor, ACES tone mapping, PCF shadows. |
 
 ## The finding that matters for scoping
 
@@ -70,53 +89,75 @@ bash scripts/build-trees.sh 0.006 0.05 _far 128  # far LOD: <slug>_far.glb, 128 
 Three layers, because a forest that is dense only at the horizon is not a forest.
 Everything is instanced — the whole scene is 68 draw calls regardless of count
 (the shadow pass adds a handful more at full detail).
-Measured at full density (`npm run build` output, read back off disk):
+Counts and triangles below are the **`?full`** tier; the default renders half of
+them. Measured by reading the built files back off disk:
 
 | layer | instances | triangles | payload | casts shadows |
 |---|---|---|---|---|
 | canopy, full detail (inside 42 m) | 185 | 1.72 M | 3.80 MB | yes |
 | canopy, far LOD (42-98 m) | 390 | 1.32 M | 1.00 MB | no |
-| mid-story, full detail | 160 | 1.93 M | 1.99 MB | no |
+| mid-story, full detail | 160 | 1.18 M | 1.46 MB | no |
 | mid-story, far LOD | 360 | 0.82 M | 0.38 MB | no |
-| fallen wood | 195 | 0.53 M | 0.81 MB | no |
-| understory plants | 2,420 | 4.92 M | **0.93 MB** | no |
+| fallen wood | 195 | 0.24 M | 0.87 MB | no |
+| fallen wood, far LOD | 120 | 0.06 M | 0.08 MB | no |
+| understory plants | 2,420 | 1.56 M | **1.18 MB** | no |
 | character (placeholder) | 1 | 0.01 M | 2.06 MB | yes |
-| **total** | **3,711** | **11.3 M visible** | **11.0 MB** | |
+| **total** | **3,831** | **6.91 M visible** | **10.8 MB** | |
 
-**What decides the frame rate is visible + the shadow pass:** 11.26 M + 3.65 M =
-**14.9 M triangles per frame**. The shadow frustum is re-rendered every frame
-(the player moves), so every shadow caster is paid for twice — which is why only
-the canopy casts. The far LODs are ~1/7 the triangles with 128 px maps; the
-understory is 44% of the visible triangles for 0.93 MB. Scatter radii stop at the
-far side of the fog so nothing is spent where fog paints over it.
+**What decides the frame rate is visible + the shadow pass:** at `?full`, 6.91 M
++ 1.72 M = **8.63 M triangles per frame**; at the default, **4.31 M**. The shadow
+frustum is re-rendered every frame (the player moves), so every shadow caster is
+paid for twice — which is why only the canopy casts. The far LODs are ~1/7 the
+triangles with 128 px maps.
 
-Fill rate matters as much as geometry here: pixel ratio is capped at 1.5 (2× is
-four times the work of 1×, and this scene has a lot of double-sided alpha-tested
-foliage — no early-Z), shadows use PCF not PCFSoft, and the shadow frustum is
-40 m. `?lite=1` renders ~42% of these counts, `?lite=2` ~16%.
+Three tricks buy density without triangles, because this is a prototype whose
+budget is a laptop, not a console:
+
+- **Scatter radii stop at the fog.** The understory is planted to 24-28 m because
+  the fog starts at 24 m; past that it was being placed only to be painted out.
+  Same instance count over a smaller disc is density where the camera is.
+- **Only what you see is decimated less.** The canopy near tier keeps 6.4-12.4k
+  triangles a tree because you stand next to it; the floor plants are 320-2,602.
+- **Fill is half the bill.** 2× device pixels is four times the work of 1×, and
+  double-sided alpha-tested foliage defeats early-Z, so the default caps the pixel
+  ratio at 1, turns MSAA off and uses PCF rather than PCFSoft shadows.
 
 Runs with `@gltf-transform/cli` (a devDependency). It prints raw vs shipped size
 and the final triangle count per species, so the cost of each step is visible
 rather than asserted (near canopy: ratio 0.006 / error 0.05; far LOD: 0.006 /
 0.05 with 128 px maps):
 
-Raw scans decimate hard: the canopy `island_tree_01` ships at 9,925 triangles
-from a 1.6 M-triangle / 60.7 MB scan (~1.4 MB GLB), `searsia_lucida` at 7,235
-from 23.2k, `pine_sapling_small` at 15,832 from a 39.8k-triangle / 16.9 MB
-download. The script prints raw vs shipped and the final triangle count per
-species, so the cost of each pass stays visible — run it and read the numbers
-rather than trusting this table, which is the kind of thing that goes stale.
+Raw scans decimate hard, and small things decimate hardest because you never get
+close enough to see it:
 
-**11.0 MB total** — the number the page reports as "asset payload", and the whole
-network cost of the scene. The understory is the cheap end: 2,420 plants for
-0.93 MB.
+| model | shipped triangles | was |
+|---|---|---|
+| `island_tree_01` (canopy hero) | 9,925 | from a 1.6 M-triangle / 60.7 MB scan |
+| `island_tree_03` (canopy hero) | 12,378 | from a 79.6 MB scan |
+| `pine_sapling_small` | 7,495 | 15,832 |
+| `searsia_lucida` | 7,235 | 23,231 |
+| `grass_medium_01` (floor) | 676 | 3,260 |
+| `fern_02` (floor) | 406 | 816 |
+| `pachira_aquatica_01` (floor) | 1,527 | 4,576 |
+
+The script prints raw vs shipped and the final triangle count per species, so the
+cost of each pass stays visible — run it and read the numbers rather than trusting
+this table, which is the kind of thing that goes stale.
+
+**10.8 MB total** — the number the page reports as "asset payload". The biggest
+single item is the placeholder **character at 2.06 MB**, i.e. one model costs more
+than all 2,420 understory plants together (1.18 MB). A real character with a
+sensible texture budget is the obvious next saving; so is 256 px maps on the
+canopy, which would roughly halve the remaining total at some cost up close.
 
 ## What this proves / does not prove
 
-Proves: a browser can hold a skinned character with animation blend trees, 3,711
+Proves: a browser can hold a skinned character with animation blend trees, 3,831
 instanced trees, plants and props with PBR materials, alpha-tested foliage with
 vertex-shader wind, shadows and ACES tone mapping — in one WebGL2 frame at 68
-draw calls, with no engine and no build step beyond Vite.
+draw calls, with no engine and no build step beyond Vite. It also proves the
+budget side: the same scene fits in ~4.3 M triangles a frame at the default
+profile, which is a laptop number rather than a workstation one.
 
 Does **not** prove: photoreal. The look still comes from the asset budget, not
 the renderer. Skinned-mesh count, cloth/hair, IK-driven foot placement,
@@ -125,10 +166,18 @@ large-world streaming and netcode are all untested here.
 ## Verification hooks
 
 `window.__proto3d` carries `ready`, `errors`, `clips`, `trees`, `species`,
-`shrubs`, `hasTool`, `lite`, `frames` (proves the rAF loop is running — a
+`shrubs`, `hasTool`, `lite`, `profile`, `phase2` (true once the deferred LODs and
+jungle floor have arrived), `frames` (proves the rAF loop is running — a
 background tab pauses it), `texBytes`/`assetBytes`, `gait`, `setClip(name)`,
 `orbitTo(yawDeg, dist, height)` to park the camera at a known bearing, and
 `facing()` for the world direction of the model's local +Z.
+
+Two of these exist to make complaints measurable rather than arguable:
+`occlusion` (`camDist`, `blocked`, `ducking`, `userDist`) and `camLog`, a
+300-frame ring buffer of the rig's own distance, eye height and blocked flag —
+counting direction reversals in it is how "the camera shakes" gets settled. The
+trunk circles the camera collides against are exposed as `trunkColliders`, which
+is how a blocking trunk can be injected on demand.
 
 Proven this way, not eyeballed: a hand bone moves during Idle; `W` switches to
 the Walk clip and translates the character; the Walk/Run buttons drive a gait
