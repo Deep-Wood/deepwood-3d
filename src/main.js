@@ -28,6 +28,7 @@ const state = {
   wind: true,
   shadows: true,
   trees: 0,
+  understory: 0,
   clip: 'Idle',
   gait: 'Idle', // button-driven locomotion: keeps walking until told to stop
   texBytes: 0,
@@ -53,6 +54,7 @@ const el = {
   calls: document.getElementById('calls'),
   tris: document.getElementById('tris'),
   trees: document.getElementById('trees'),
+  plants: document.getElementById('plants'),
   api: document.getElementById('api'),
   gpuhint: document.getElementById('gpuhint'),
   tex: document.getElementById('tex'),
@@ -102,7 +104,7 @@ renderer.setPixelRatio(LITE >= 3 ? 0.5 : LITE === 2 ? 0.75 : LITE === 1 ? 1 : Ma
 renderer.setSize(innerWidth, innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.05;
+renderer.toneMappingExposure = 0.98;
 renderer.shadowMap.enabled = !NO_SHADOWS;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 app.appendChild(renderer.domElement);
@@ -124,9 +126,10 @@ const skyMat = new THREE.ShaderMaterial({
   side: THREE.BackSide,
   depthWrite: false,
   uniforms: {
-    topColor: { value: new THREE.Color(0x24405f) },
-    midColor: { value: new THREE.Color(0x7d94a6) },
-    horizon: { value: new THREE.Color(0xcfc09a) },
+    // Humid overcast: a jungle sky is hazy and pale, and mostly hidden anyway.
+    topColor: { value: new THREE.Color(0x5c7f86) },
+    midColor: { value: new THREE.Color(0x9fb3a4) },
+    horizon: { value: new THREE.Color(0xe0e2c2) },
     sunDir: { value: new THREE.Vector3(0.6, 0.42, -0.7).normalize() },
   },
   vertexShader: /* glsl */`
@@ -145,18 +148,21 @@ const skyMat = new THREE.ShaderMaterial({
       col = mix(col, topColor, smoothstep(0.3, 0.95, h));
       float sun = pow(max(dot(d, normalize(sunDir)), 0.0), 42.0);
       float halo = pow(max(dot(d, normalize(sunDir)), 0.0), 5.0) * 0.25;
-      col += vec3(1.0, 0.86, 0.6) * sun * 1.5 + vec3(1.0, 0.8, 0.55) * halo;
+      // Soft, diffuse glow — a hard sun disc reads as open sky, not canopy.
+      col += vec3(1.0, 0.94, 0.78) * sun * 0.55 + vec3(1.0, 0.93, 0.8) * halo;
       gl_FragColor = vec4(col, 1.0);
     }`,
 });
 const sky = new THREE.Mesh(new THREE.SphereGeometry(320, 32, 16), skyMat);
 scene.add(sky);
-scene.fog = new THREE.Fog(0x8fa0a6, 70, 320);
+// Canopy haze: green and fairly close, so distance reads as humid jungle depth.
+// Not TOO close — fog this dense over a thin forest just looks like empty ground.
+scene.fog = new THREE.Fog(0x7f9168, 26, 165);
 
 // --------------------------------------------------------------- lights ----
 // Sun behind-left of the default camera so the character reads front-lit.
 const sunDir = new THREE.Vector3(-0.55, 0.48, 0.68).normalize();
-const sun = new THREE.DirectionalLight(0xffe6bd, 2.7);
+const sun = new THREE.DirectionalLight(0xf0f4d8, 1.9);
 sun.castShadow = true;
 const SHADOW_MAP = LITE >= 3 ? 256 : LITE === 2 ? 512 : LITE === 1 ? 1024 : 2048;
 sun.shadow.mapSize.set(SHADOW_MAP, SHADOW_MAP);
@@ -171,7 +177,8 @@ sun.shadow.normalBias = 0.035;
 scene.add(sun);
 scene.add(sun.target);
 
-const hemi = new THREE.HemisphereLight(0xbcd3e8, 0x2f3a25, 1.05);
+// Stronger green bounce from the foliage below than an open plain would give.
+const hemi = new THREE.HemisphereLight(0xb4cede, 0x26351a, 0.95);
 scene.add(hemi);
 // Soft fill from the camera side: keeps the rig readable when the sun is low.
 const fill = new THREE.DirectionalLight(0xbfd6ff, 0.45);
@@ -190,10 +197,11 @@ groundGeo.rotateX(-Math.PI / 2);
 {
   const pos = groundGeo.attributes.position;
   const colors = new Float32Array(pos.count * 3);
-  const cDirt = new THREE.Color(0x4a3a24);
-  const cMoss = new THREE.Color(0x35492a);
-  const cGrass = new THREE.Color(0x44613a);
-  const cStone = new THREE.Color(0x6b6f66);
+  // Forest floor: dark humus and leaf litter, not pasture.
+  const cDirt = new THREE.Color(0x38301c);
+  const cMoss = new THREE.Color(0x22331a);
+  const cGrass = new THREE.Color(0x2c4420);
+  const cStone = new THREE.Color(0x4c5044);
   const tmp = new THREE.Color();
   for (let i = 0; i < pos.count; i++) {
     const x = pos.getX(i), z = pos.getZ(i);
@@ -299,7 +307,7 @@ function makeWindy(material, treeHeight, strength) {
 }
 
 /** Merge a glTF scene by material and draw it as instanced meshes. */
-function instancedFrom(gltfScene, placements, { castShadow = true } = {}) {
+function instancedFrom(gltfScene, placements, { castShadow = true, tally = 'trees' } = {}) {
   gltfScene.updateWorldMatrix(true, true);
   const box = new THREE.Box3().setFromObject(gltfScene);
   const height = box.max.y - box.min.y;
@@ -342,7 +350,7 @@ function instancedFrom(gltfScene, placements, { castShadow = true } = {}) {
   // Counted once per species. This used to sit inside the per-material loop
   // above, so a two-material tree (bark + foliage) reported double its
   // instances and the HUD overstated the forest by ~2x.
-  state.trees += placements.length;
+  if (tally) state[tally] = (state[tally] || 0) + placements.length;
 
   const m4 = new THREE.Matrix4();
   const q = new THREE.Quaternion();
@@ -593,6 +601,7 @@ function updateHud() {
   el.calls.textContent = String(renderer.info.render.calls);
   el.tris.textContent = renderer.info.render.triangles.toLocaleString();
   el.trees.textContent = String(state.trees);
+  el.plants.textContent = String(state.understory || 0);
   el.api.textContent = renderer.capabilities.isWebGL2 ? 'WebGL2' : 'WebGL1';
   el.gpuhint.textContent = navigator.gpu ? 'available' : 'no';
   el.tex.textContent = tooltipByteEstimate ? `${(tooltipByteEstimate / 1048576).toFixed(1)} MB` : 'n/a';
@@ -651,7 +660,20 @@ function tick() {
     }
     setClip(gait);
     if (metro.follow) {
-      controls.target.lerp(new THREE.Vector3(character.position.x, character.position.y + 1.15, character.position.z), 0.08);
+      // Move the EYE with the character, not just the look target. Lerping only
+      // controls.target pivots the view around a fixed camera, so the player
+      // walks away and shrinks to a dot instead of being followed.
+      const p = character.position;
+      if (!prevFollow) prevFollow = p.clone();
+      const dx = p.x - prevFollow.x, dy = p.y - prevFollow.y, dz = p.z - prevFollow.z;
+      if (dx || dy || dz) {
+        camera.position.x += dx; camera.position.y += dy; camera.position.z += dz;
+        controls.target.x += dx; controls.target.y += dy; controls.target.z += dz;
+      }
+      prevFollow.copy(p);
+      controls.target.lerp(new THREE.Vector3(p.x, p.y + 1.15, p.z), 0.08);
+    } else {
+      prevFollow = null;
     }
     // keep the shadow frustum on the player
     sun.position.copy(character.position).addScaledVector(sunDir, 60);
@@ -666,6 +688,8 @@ function tick() {
   requestAnimationFrame(tick);
 }
 const metro = { follow: true };
+/** Previous character position for the follow rig (see the tick). */
+let prevFollow = null;
 
 // ------------------------------------------------------------------ boot ---
 /**
@@ -682,41 +706,87 @@ const metro = { follow: true };
  * paints over them. Counts are scaled by the ?lite level at boot.
  */
 const SPECIES = [
+  // Canopy. The broadleaf island trees replace the karoo/desert species that
+  // were standing in for a forest: they are tall, wide and leafy, which is what
+  // makes the layer above the player read as jungle.
+  { slug: 'island_tree_01',
+    near: { n: 60, minR: 7.0, maxR: 42, minDist: 6.0, scale: [1.0, 1.5] },
+    far:  { n: 130, minR: 42, maxR: 96, minDist: 7.0, scale: [1.0, 1.5], gate: 0.24 } },
+  { slug: 'island_tree_02',
+    near: { n: 70, minR: 6.5, maxR: 40, minDist: 5.5, scale: [1.0, 1.5] },
+    far:  { n: 140, minR: 40, maxR: 92, minDist: 6.5, scale: [1.0, 1.5], gate: 0.24 } },
+  { slug: 'island_tree_03',
+    near: { n: 55, minR: 7.5, maxR: 44, minDist: 6.5, scale: [1.0, 1.5] },
+    far:  { n: 120, minR: 44, maxR: 98, minDist: 7.5, scale: [1.0, 1.5], gate: 0.24 } },
+  // Mid-story filler between the trunks.
   { slug: 'pine_sapling_small',
-    near: { n: 170, minR: 6.5, maxR: 40, minDist: 2.4, scale: [0.9, 2.1] },
-    far:  { n: 420, minR: 40,  maxR: 94, minDist: 3.6, scale: [0.9, 2.1], gate: 0.26 } },
+    near: { n: 90, minR: 6.5, maxR: 40, minDist: 2.6, scale: [0.9, 2.0] },
+    far:  { n: 200, minR: 40, maxR: 94, minDist: 3.6, scale: [0.9, 2.0], gate: 0.26 } },
   { slug: 'searsia_lucida',
-    near: { n: 130, minR: 6.0, maxR: 38, minDist: 2.0, scale: [0.9, 1.7] },
-    far:  { n: 330, minR: 38,  maxR: 86, minDist: 3.0, scale: [0.9, 1.7], gate: 0.26 } },
-  { slug: 'quiver_tree_01',
-    near: { n: 45,  minR: 8.0, maxR: 42, minDist: 5.0, scale: [0.9, 1.6] },
-    far:  { n: 130, minR: 42,  maxR: 88, minDist: 6.0, scale: [0.9, 1.6], gate: 0.26 } },
+    near: { n: 70, minR: 6.0, maxR: 38, minDist: 2.2, scale: [0.9, 1.7] },
+    far:  { n: 160, minR: 38, maxR: 88, minDist: 3.2, scale: [0.9, 1.7], gate: 0.26 } },
+  // Fallen and rotting wood — the "depleted node" states the game needs, and
+  // the debris a real forest floor is full of.
   { slug: 'tree_stump_01',
-    near: { n: 55,  minR: 5.5, maxR: 34, minDist: 3.4, scale: [0.9, 1.3] },
-    far:  { n: 40,  minR: 34,  maxR: 58, minDist: 5.0, scale: [0.9, 1.3], gate: 0.3 } },
+    near: { n: 80, minR: 5.5, maxR: 34, minDist: 3.4, scale: [0.9, 1.3] },
+    far:  { n: 60, minR: 34, maxR: 58, minDist: 5.0, scale: [0.9, 1.3], gate: 0.3 } },
+  { slug: 'tree_stump_02',
+    near: { n: 45, minR: 6.0, maxR: 36, minDist: 5.0, scale: [0.9, 1.4] },
+    far:  null },
   { slug: 'dead_tree_trunk_02',
-    near: { n: 40,  minR: 9.0, maxR: 40, minDist: 6.0, scale: [1.0, 1.6] },
-    far:  { n: 45,  minR: 40,  maxR: 74, minDist: 7.5, scale: [1.0, 1.6], gate: 0.3 } },
+    near: { n: 70, minR: 9.0, maxR: 40, minDist: 6.0, scale: [1.0, 1.6] },
+    far:  { n: 60, minR: 40, maxR: 74, minDist: 7.5, scale: [1.0, 1.6], gate: 0.3 } },
+];
+
+/**
+ * The jungle floor. Real Poly Haven understory models rather than billboards, at
+ * 0.8-4.6k triangles each, so thousands are affordable; nothing here casts
+ * shadows, because leaves and blades cost more in the shadow pass than they add.
+ * `far: null` on a species means it has no cheap LOD and is only planted near.
+ */
+const UNDERSTORY = [
+  { slug: 'fern_02',               n: 1000, minR: 2.4, maxR: 44, minDist: 0.9, scale: [0.8, 1.9] },
+  { slug: 'grass_medium_01',       n: 1200, minR: 2.2, maxR: 40, minDist: 0.8, scale: [0.7, 1.8] },
+  { slug: 'shrub_02',              n: 500,  minR: 3.0, maxR: 46, minDist: 1.4, scale: [0.8, 1.7] },
+  { slug: 'calathea_orbifolia_01', n: 600,  minR: 3.0, maxR: 44, minDist: 1.2, scale: [0.8, 1.6] },
+  { slug: 'anthurium_botany_01',   n: 200,  minR: 4.0, maxR: 42, minDist: 2.2, scale: [0.9, 1.5] },
+  { slug: 'pachira_aquatica_01',   n: 120,  minR: 5.0, maxR: 44, minDist: 2.6, scale: [0.9, 1.6] },
 ];
 
 (async function boot() {
   try {
     const k = LITE_K;
-    const [models, farModels] = await Promise.all([
+    const [models, farModels, under] = await Promise.all([
       Promise.all(SPECIES.map((s) => loader.loadAsync(`/assets/trees/${s.slug}.glb`))),
-      Promise.all(SPECIES.map((s) => loader.loadAsync(`/assets/trees/${s.slug}_far.glb`))),
+      Promise.all(SPECIES.map((s) => (s.far ? loader.loadAsync(`/assets/trees/${s.slug}_far.glb`) : null))),
+      Promise.all(UNDERSTORY.map((s) => loader.loadAsync(`/assets/trees/${s.slug}.glb`))),
     ]);
     state.species = {};
     models.forEach((gltf, i) => {
       const s = SPECIES[i];
       const near = scatter(Math.round(s.near.n * k), s.near);
-      const far = scatter(Math.round(s.far.n * k), s.far);
       const built = instancedFrom(gltf.scene, near);
-      const builtFar = instancedFrom(farModels[i].scene, far, { castShadow: false });
-      scene.add(built.group, builtFar.group);
-      state.species[s.slug] = near.length + far.length;
+      scene.add(built.group);
       built.group.userData.treeHeight = built.height;
-      builtFar.group.userData.treeHeight = builtFar.height;
+      let farCount = 0;
+      if (farModels[i]) {
+        const far = scatter(Math.round(s.far.n * k), s.far);
+        const builtFar = instancedFrom(farModels[i].scene, far, { castShadow: false });
+        scene.add(builtFar.group);
+        builtFar.group.userData.treeHeight = builtFar.height;
+        farCount = far.length;
+      }
+      state.species[s.slug] = near.length + farCount;
+    });
+
+    // Jungle floor: instanced plants, no shadow casting, tallied separately so
+    // the HUD can show the two layers apart.
+    under.forEach((gltf, i) => {
+      const u = UNDERSTORY[i];
+      const spots = scatter(Math.round(u.n * k), u);
+      const built = instancedFrom(gltf.scene, spots, { castShadow: false, tally: 'understory' });
+      scene.add(built.group);
+      built.group.userData.treeHeight = built.height;
     });
 
     // Asset budget: HEAD the shipped files and sum the real Content-Length.
@@ -724,7 +794,8 @@ const SPECIES = [
     // would print a fake "0 MB"; this is the number a phone actually pulls.
     const files = [
       ...SPECIES.map((s) => `/assets/trees/${s.slug}.glb`),
-      ...SPECIES.map((s) => `/assets/trees/${s.slug}_far.glb`),
+      ...SPECIES.filter((s) => s.far).map((s) => `/assets/trees/${s.slug}_far.glb`),
+      ...UNDERSTORY.map((s) => `/assets/trees/${s.slug}.glb`),
       '/assets/char/soldier.glb',
     ];
     const heads = await Promise.all(files.map(async (f) => {

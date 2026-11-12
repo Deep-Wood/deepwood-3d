@@ -40,9 +40,12 @@ out before it can assert anything.
 |---|---|---|
 | Character | `soldier.glb`, three.js sample assets | 68-bone Mixamo rig, 2 skinned meshes, clips **Idle / Walk / Run / TPose**. **Placeholder** — swap for licensed art. |
 | Tool | built in code | pickaxe parented to the `mixamorig:RightHand` bone — the same "attach to socket" pattern a real tool model would use. |
-| Trees | Poly Haven, **CC0** | five models: `pine_sapling_small`, `quiver_tree_01`, `searsia_lucida`, `tree_stump_01`, `dead_tree_trunk_02`. Decimated — see below. |
-| Tree materials | Poly Haven, **CC0** | real PBR sets: baseColor + normal + packed metallicRoughness/AO, resized to 512. |
-| Terrain, sky, sun, fog, camp | procedural | the game's `camp3d.js` approach, upgraded with ACES tone mapping, PCF soft shadows and fog. |
+| Canopy trees | Poly Haven, **CC0** | `island_tree_01/02/03` — tall broadleaf trees, 12.7-24.9k triangles each, two LOD tiers. |
+| Mid-story trees | Poly Haven, **CC0** | `pine_sapling_small`, `searsia_lucida` filling the space between trunks. |
+| Understory | Poly Haven, **CC0** | `fern_02`, `calathea_orbifolia_01`, `anthurium_botany_01`, `pachira_aquatica_01`, `shrub_02`, `grass_medium_01` — real plants, ~0.8-4.6k triangles each, planted by the thousand. |
+| Fallen wood | Poly Haven, **CC0** | `tree_stump_01`, `tree_stump_02`, `dead_tree_trunk_02` — the game's "depleted node" states, and real forest-floor debris. |
+| Tree materials | Poly Haven, **CC0** | real PBR sets: baseColor + normal + packed metallicRoughness/AO, 512 px near / 128 px far. |
+| Terrain, sky, sun, fog, camp | procedural | humid-overcast sky, canopy haze fog, dark humus floor, ACES tone mapping, PCF soft shadows. |
 
 ## The finding that matters for scoping
 
@@ -64,13 +67,24 @@ bash scripts/build-trees.sh                      # near set: weld → simplify �
 bash scripts/build-trees.sh 0.006 0.05 _far 128  # far LOD: <slug>_far.glb, 128 px maps
 ```
 
-Two tiers, because a forest that is dense only at the horizon is not a forest.
-The near set (inside 42 m) is the full-detail decimation; the far set (out to the
-fog) is ~1/7 the triangles with 128 px maps and casts no shadows. Measured at
-full density: near **440 trees / 6.20 M triangles**, far **965 trees / 1.94 M** —
-so the whole far tier costs less than the 170 near pines, and at 40+ m nobody can
-tell. Scatter radii stop at the far side of the fog so no triangles are spent
-where fog paints over them.
+Three layers, because a forest that is dense only at the horizon is not a forest.
+Everything is instanced — the whole scene is ~70 draw calls regardless of count.
+Measured at full density (`npm run build` output, read back off disk):
+
+| layer | instances | triangles | payload |
+|---|---|---|---|
+| canopy, full detail (inside 42 m) | 185 | 3.41 M | 5.80 MB |
+| canopy, far LOD (42-98 m) | 390 | 1.32 M | 1.00 MB |
+| mid-story, full detail | 160 | 3.05 M | 2.90 MB |
+| mid-story, far LOD | 360 | 0.82 M | 0.38 MB |
+| fallen wood | 315 | 0.59 M | 0.89 MB |
+| understory plants | 3,620 | 7.46 M | **0.93 MB** |
+| **total** | **5,030** | **16.6 M** | **14.0 MB** |
+
+The far LODs are ~1/7 the triangles with 128 px maps and cast no shadows; the
+understory casts no shadows either (leaves cost more in the shadow pass than they
+add). Scatter radii stop at the far side of the fog so nothing is spent where fog
+paints over it. `?lite=1` renders about 42% of these counts.
 
 Runs with `@gltf-transform/cli` (a devDependency). It prints raw vs shipped size
 and the final triangle count per species, so the cost of each step is visible
@@ -78,22 +92,31 @@ rather than asserted. What actually ships (ratio 0.04 / error 0.01):
 
 | model | raw buffer | near set | triangles | far LOD | far triangles |
 |---|---|---|---|---|---|
+| `island_tree_01` | 60.7 MB | 2,041,044 B | 19,131 | 367,000 B | 3,780 |
+| `island_tree_03` | 79.6 MB | 2,493,724 B | 24,909 | 422,000 B | 4,222 |
+| `island_tree_02` | 40.7 MB | 1,545,508 B | 12,687 | 258,000 B | 2,275 |
 | `pine_sapling_small` | 16.9 MB | 1,453,768 B | 15,832 | 215,500 B | 2,318 |
 | `searsia_lucida` | 17.1 MB | 1,590,928 B | 23,231 | 187,560 B | 2,231 |
-| `quiver_tree_01` | 4.2 MB | 550,544 B | 5,995 | 105,864 B | 1,484 |
 | `dead_tree_trunk_02` | 1.9 MB | 348,740 B | 3,324 | 47,572 B | 670 |
 | `tree_stump_01` | 0.9 MB | 334,796 B | 1,641 | 33,444 B | 290 |
+| `fern_02` | 0.2 MB | 64 K | 816 | — | — |
+| `calathea_orbifolia_01` | 0.4 MB | 172 K | 4,021 | — | — |
+| `grass_medium_01` | 1.0 MB | 168 K | 3,735 | — | — |
+| `pachira_aquatica_01` | 2.0 MB | 124 K | 1,590 | — | — |
+| `anthurium_botany_01` | 1.7 MB | 260 K | 4,576 | — | — |
+| `shrub_02` | 0.8 MB | 124 K | 968 | — | — |
 | `soldier.glb` (character) | — | 2,160,468 B | — | — | — |
 
-**6.7 MB total** with the character and both tree tiers — that is the number the
-page reports as "asset payload", and the whole network cost of the scene.
+**14.0 MB total** — that is the number the page reports as "asset payload", and
+the whole network cost of the scene. The understory is the cheap half: 3,620
+plants for under 1 MB.
 
 ## What this proves / does not prove
 
-Proves: a browser can hold a skinned character with animation blend trees,
-hundreds of instanced real tree meshes with PBR materials, alpha-tested foliage
-with vertex-shader wind, soft shadows and ACES tone mapping — in one WebGL2
-frame, with no engine and no build step beyond Vite.
+Proves: a browser can hold a skinned character with animation blend trees, 5,030
+instanced trees, plants and props with PBR materials, alpha-tested foliage with
+vertex-shader wind, soft shadows and ACES tone mapping — in one WebGL2 frame at
+~70 draw calls, with no engine and no build step beyond Vite.
 
 Does **not** prove: photoreal. The look still comes from the asset budget, not
 the renderer. Skinned-mesh count, cloth/hair, IK-driven foot placement,

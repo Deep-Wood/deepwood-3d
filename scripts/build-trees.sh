@@ -17,7 +17,11 @@ mkdir -p "$OUT" work/out
 # Usage: bash scripts/build-trees.sh [ratio] [error] [suffix] [texsize]
 #   bash scripts/build-trees.sh                 # full-detail set  -> <slug>.glb
 #   bash scripts/build-trees.sh 0.02 0.03 _far 128   # far LOD      -> <slug>_far.glb
-SPECIES=(pine_sapling_small quiver_tree_01 searsia_lucida tree_stump_01 dead_tree_trunk_02)
+if [ -n "${ASSETS:-}" ]; then
+  read -r -a SPECIES <<< "$ASSETS"        # e.g. ASSETS="fern_02 grass_medium_01" bash scripts/build-trees.sh
+else
+  SPECIES=(pine_sapling_small quiver_tree_01 searsia_lucida tree_stump_01 dead_tree_trunk_02)
+fi
 RATIO="${1:-0.10}"
 ERR="${2:-0.005}"
 SUFFIX="${3:-}"
