@@ -84,6 +84,14 @@ const Q = params.has('full') || LITE === 0 ? PROFILES.full
   : PROFILES.light;
 const LITE_K = Q.k;
 const NO_SHADOWS = Q.shadow === 0;
+
+/**
+ * Which character file to load, so candidates can be compared without touching
+ * the default: `?char=mixamo-beta.glb`. Any Mixamo-rigged glTF works — the rig is
+ * the same 65-bone `mixamorig*` skeleton, so our clip set and the delver dressing
+ * both apply as-is, with no retargeting.
+ */
+const CHAR_FILE = params.get('char') || 'soldier.glb';
 state.lite = LITE;
 state.profile = Q.label;
 
@@ -631,49 +639,72 @@ function dressDelver(root) {
     return part;
   };
 
-  // Every height below is MEASURED off this rig, in metres above his feet, not
-  // guessed: head 1.472, neck 1.442, chest (Spine2) 1.305, shoulders 1.419,
-  // hips 0.975, knee 0.563. The first attempt placed the hood 0.045 m above the
-  // head BONE and it sat around his collarbones, because the head is another
-  // 0.16 m above that joint.
+  // Fit comes from THIS rig's own bones, never from absolute metres.
+  //
+  // The first version used constants hand-tuned on the soldier (head 1.472, chest
+  // 1.305, shoulders 1.419, hips 0.975) and it looked right on him — then the same
+  // outfit put a beach ball over a second character's head, because an absolute
+  // 1.645 m is 0.66 skulls above the soldier's head bone and only 0.05 above the
+  // other one's. Everything below is therefore expressed in skull-lengths
+  // (Head -> HeadTop_End, present on any Mixamo rig) above a measured joint, and
+  // the constants are exactly what was hand-tuned on the soldier, so he is
+  // unchanged while any rig now fits.
+  const rel = (n, fallback = 0) => {
+    const b = bones[n];
+    if (!b) return fallback;
+    return b.getWorldPosition(new THREE.Vector3()).y - root.position.y;
+  };
+  const headY = rel('Head', 1.476);
+  const chestY = rel('Spine2', 1.308);
+  const shoulderY = rel('LeftShoulder', 1.423);
+  const hipsY = rel('Hips', 0.978);
+
+  const headW = bones.Head.getWorldPosition(new THREE.Vector3());
+  const topW = bones.HeadTop_End
+    ? bones.HeadTop_End.getWorldPosition(new THREE.Vector3())
+    : headW.clone().add(new THREE.Vector3(0, 0.256, 0));
+  const skull = Math.max(headW.distanceTo(topW), 0.12);
+  const ref = skull / 0.256; // 1.0 = the soldier, which is what the numbers below were tuned on
+
   const base = root.position;
   const at = (y, dz = 0) => new THREE.Vector3(base.x, base.y + y, base.z + dz);
 
-  // Hood: an egg over the head and helmet. A shade deeper than it is wide and
-  // pushed back, because a hood bulges behind the skull.
-  const hoodGeo = new THREE.SphereGeometry(0.17, 18, 14);
+  // Hood: an egg over the head, sitting 0.66 skulls up and a shade deeper than it
+  // is wide, pushed back because a hood bulges behind the skull.
+  const hoodGeo = new THREE.SphereGeometry(0.17 * ref, 18, 14);
   hoodGeo.scale(1.0, 1.05, 1.12);
   const hood = new THREE.Mesh(hoodGeo, cloth);
-  bind(hood, bones.Head, at(1.645, 0.03));
+  bind(hood, bones.Head, at(headY + 0.169 * ref, 0.03 * ref));
 
   // The face is a void, not a face — hunter.png shows a shadowed hood interior.
-  // It has to protrude PAST the hood's front face or it is simply invisible
-  // inside it: the hood reaches -0.19 in z (0.17 radius, stretched 1.12), so a
-  // 0.125 sphere centred any closer than ~-0.07 never shows.
-  const face = new THREE.Mesh(new THREE.SphereGeometry(0.125, 14, 12), hollow);
-  bind(face, bones.Head, at(1.63, -0.088));
+  // It has to protrude PAST the hood's front face or it is invisible inside it.
+  const face = new THREE.Mesh(new THREE.SphereGeometry(0.125 * ref, 14, 12), hollow);
+  bind(face, bones.Head, at(headY + 0.154 * ref, -0.088 * ref));
 
   // Mantle: a short shoulder cape that joins the hood to the cloak.
-  const mantle = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.2, 0.26, 16, 1, true), cloth);
-  bind(mantle, bones.Spine2, at(1.33));
+  const mantle = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.13 * ref, 0.2 * ref, 0.26 * ref, 16, 1, true), cloth,
+  );
+  bind(mantle, bones.Spine2, at(chestY + 0.022 * ref));
 
-  // Cloak: NOT a cone. The first version was a full 360-degree cylinder from the
-  // shoulders to the ground and he read as a traffic cone. This is a cape — 210
-  // degrees, so the back and sides are covered and the front stays open — from
-  // the shoulders to mid-calf, hanging off a pivot at the chest so it can sway.
+  // Cloak: NOT a cone. A full 360-degree cylinder from shoulder to ground reads as
+  // a traffic cone. This is a cape — 210 degrees, so the back and sides are
+  // covered and the front stays open — shoulders to mid-calf, hanging off a pivot
+  // at the chest so it can sway.
   const cloakPivot = new THREE.Group();
   const cloak = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.19, 0.34, 0.95, 18, 1, true, -Math.PI / 12, Math.PI * 7 / 6),
+    new THREE.CylinderGeometry(0.19 * ref, 0.34 * ref, 0.95 * ref, 18, 1, true,
+      -Math.PI / 12, Math.PI * 7 / 6),
     clothDark,
   );
-  cloak.position.y = -0.475;
+  cloak.position.y = -0.475 * ref;
   cloakPivot.add(cloak);
-  bind(cloakPivot, bones.Spine2, at(1.42, 0.03));
+  bind(cloakPivot, bones.Spine2, at(shoulderY, 0.03 * ref));
 
   // Belt, visible through the open front.
-  const belt = new THREE.Mesh(new THREE.TorusGeometry(0.165, 0.022, 8, 18), leather);
+  const belt = new THREE.Mesh(new THREE.TorusGeometry(0.165 * ref, 0.022 * ref, 8, 18), leather);
   belt.rotation.x = Math.PI / 2;
-  bind(belt, bones.Hips, at(1.0));
+  bind(belt, bones.Hips, at(hipsY + 0.022 * ref));
 
   // Under the hood there is only shadow: drop the visor, and tint the uniform to
   // the game's muted teal. Cloned so the shared source material is untouched.
@@ -691,18 +722,56 @@ function dressDelver(root) {
   state.avatar = {
     dressed: true, hood: true, cape: true, visorHidden: Boolean(visor),
     tint: '#6b8a82', parts: 5,
-    fit: { hoodAt: 1.645, mantleAt: 1.33, capeTop: 1.42, capeTo: 0.47 },
+    fit: { skull: +skull.toFixed(3), ref: +ref.toFixed(3), hoodAt: +(headY + 0.169 * ref).toFixed(3) },
   };
   return root.userData.delver;
 }
 
 async function loadCharacter() {
-  const gltf = await loader.loadAsync('/assets/char/soldier.glb');
+  const gltf = await loader.loadAsync(`/assets/char/${CHAR_FILE}`);
   const root = gltf.scene;
+
+  // ---- fit the candidate: upright, 1.82 m, feet on the ground ---------------
+  // A character file can arrive in any axis convention, and this one did: a
+  // Mixamo FBX converted through Blender came with a +90 degree rotation on its
+  // armature node ON TOP of already-Y-up mesh data, so the character lay on his
+  // back with his head under the terrain. The app looked broken; the asset was
+  // fine, just double-converted. Normalising here means any candidate works.
+  //
+  // Which way is up comes from the RIG, not the bounding box: a box cannot tell a
+  // head from a heel, but the foot-to-head vector can.
+  root.updateMatrixWorld(true);
+  const bone = (re) => {
+    let hit = null;
+    root.traverse((o) => { if (!hit && o.isBone && re.test(o.name)) hit = o; });
+    return hit;
+  };
+  const headBone = bone(/Head$/i);
+  const footBone = bone(/LeftFoot$/i) || bone(/Foot$/i);
+  let upFixed = false;
+  let upVec = null;
+  if (headBone && footBone) {
+    const headW = headBone.getWorldPosition(new THREE.Vector3());
+    const footW = footBone.getWorldPosition(new THREE.Vector3());
+    const up = headW.sub(footW).normalize();
+    upVec = up.clone();
+    if (up.y < 0.9) { // not already standing up
+      root.quaternion.premultiply(
+        new THREE.Quaternion().setFromUnitVectors(up, new THREE.Vector3(0, 1, 0)),
+      );
+      root.updateMatrixWorld(true);
+      upFixed = true;
+    }
+  }
+
   const box = new THREE.Box3().setFromObject(root);
-  const h = box.max.y - box.min.y;
-  const scale = 1.82 / h;
-  root.scale.setScalar(scale);
+  const h = Math.max(box.max.y - box.min.y, 0.001);
+  root.scale.multiplyScalar(1.82 / h);
+  root.updateMatrixWorld(true);
+  // Feet to zero. Kept as an offset so the spawn placement below can carry it.
+  const fit = new THREE.Box3().setFromObject(root);
+  root.position.y -= fit.min.y;
+
   root.traverse((o) => {
     if (o.isMesh || o.isSkinnedMesh) {
       o.castShadow = true;
@@ -711,18 +780,77 @@ async function loadCharacter() {
       if (o.material) o.material.roughness = Math.min(o.material.roughness ?? 0.8, 0.85);
     }
   });
-  root.position.set(2.15, heightAt(2.15, 2.9), 2.9);
-  root.rotation.y = Math.PI * 0.82;
+  root.position.set(2.15, heightAt(2.15, 2.9) + root.position.y, 2.9);
+  // Compose the spawn heading as a quaternion: assigning rotation.y here would
+  // REPLACE the up-correction above, because an Euler write overwrites the whole
+  // quaternion.
+  root.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(
+    new THREE.Vector3(0, 1, 0), Math.PI * 0.82,
+  ));
   scene.add(root);
   character = root;
+  state.characterFit = {
+    file: CHAR_FILE, rawHeight: +h.toFixed(3), upFixed,
+    feetOffset: +fit.min.y.toFixed(3), scaled: +(1.82 / h).toFixed(4),
+    headBone: headBone ? headBone.name : null,
+    footBone: footBone ? footBone.name : null,
+    upVec: upVec ? [+upVec.x.toFixed(2), +upVec.y.toFixed(2), +upVec.z.toFixed(2)] : null,
+    boneSpanY: headBone && footBone
+      ? +(headBone.getWorldPosition(new THREE.Vector3()).y
+        - footBone.getWorldPosition(new THREE.Vector3()).y).toFixed(3)
+      : null,
+  };
 
   mixer = new THREE.AnimationMixer(root);
-  gltf.animations.forEach((clip) => {
+  // Clips: the character's OWN first, always.
+  //
+  // Sharing bone NAMES is not enough to share clips. The clips carry hip
+  // positions expressed in the file's own root convention, and converters differ:
+  // the soldier's file has a -90 degree root rotation, a Blender-converted Mixamo
+  // file has +90. Lending the soldier's clips to this character folded it in half
+  // — measured, the head ended up 1.36 m BELOW the left foot, while at load time
+  // the same rig measured +1.52 m head-above-foot. So: never combine a character
+  // with another file's clips unless both came through the same converter.
+  //
+  // Mixamo gives every download the animation you had selected, so the fix for
+  // real use is to download the character three times (idle, walking, running)
+  // rather than to retarget anything.
+  let clips = gltf.animations;
+  const mapping = {};
+  if (clips.length && !clips.some((c) => c.name === 'Idle')) {
+    // Nothing is called Idle: use its first clip as the idle, and name the shift
+    // so the HUD does not lie about what is playing.
+    mapping[clips[0].name] = 'Idle';
+  }
+  if (!clips.length) {
+    // No animation at all in the file. Fall back to the donor, but say so: the
+    // conventions may not match and the result may be wrong in a way that is not
+    // obvious.
+    const donor = await loader.loadAsync('/assets/char/soldier.glb');
+    clips = donor.animations;
+    state.clipSource = 'donor: soldier.glb (convention mismatch possible)';
+  } else {
+    state.clipSource = CHAR_FILE;
+  }
+  clips.forEach((clip) => {
     const a = mixer.clipAction(clip);
     a.enabled = true;
-    actions[clip.name] = a;
+    actions[mapping[clip.name] || clip.name] = a;
   });
-  setClip('Idle', { force: true });
+  state.clipMapping = mapping;
+  state.characterFile = CHAR_FILE;
+
+  // Pose the rig BEFORE dressing it. setClip only *schedules* a fade — the pose
+  // is applied by mixer.update in the render loop — so the rig is still in its
+  // BIND pose at this point. A hood fitted to a T-posed head ends up ~8 cm above
+  // where the head actually sits (measured: 1.727 against the 1.645 that was
+  // tuned on a posed rig), which is exactly the "floating like a balloon" look.
+  const idleAction = actions.Idle;
+  if (idleAction) {
+    idleAction.reset().setEffectiveWeight(1).play();
+    mixer.update(0);
+    root.updateMatrixWorld(true);
+  }
 
   let hand = null;
   root.traverse((o) => {
@@ -730,6 +858,7 @@ async function loadCharacter() {
   });
   if (hand) root.userData.tool = attachTool(hand);
   dressDelver(root); // the hooded-delver silhouette, see above
+  setClip('Idle', { force: true }); // normal entry point: full weight, no fade
   state.character = root;
   state.clips = Object.keys(actions);
   state.hasTool = Boolean(hand);
@@ -1418,7 +1547,7 @@ function rockGeometry(seed = 0) {
         ...SPECIES.filter((s) => s.far).map((s) => `/assets/trees/${s.slug}_far.glb`),
         ...UNDERSTORY.map((s) => `/assets/trees/${s.slug}.glb`),
         ...ROCKS.filter((r) => !r.procedural).map((r) => `/assets/trees/${r.slug}.glb`),
-        '/assets/char/soldier.glb',
+        `/assets/char/${CHAR_FILE}`, // the character actually loaded, not always the default
       ];
       const heads = await Promise.all(files.map(async (f) => {
         try {
