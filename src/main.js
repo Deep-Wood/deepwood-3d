@@ -543,8 +543,20 @@ let currentAction = null;
 
 function setClip(name, { force = false } = {}) {
   if (!actions[name]) return false;
-  if (!force && currentAction === actions[name]) return true;
   const next = actions[name];
+  if (currentAction === next) {
+    if (!force) return true;
+    // Re-forcing the clip that is ALREADY playing must not fade it out: the
+    // generic path below fades in `next` and then fades out whatever
+    // `currentAction` is — which is the same action — cancelling its own fade and
+    // leaving the rig on its BIND POSE. (A T-pose in a screenshot is usually this,
+    // not a broken skin.) Just restart it at full weight instead.
+    next.reset();
+    next.setEffectiveWeight(1);
+    next.play();
+    state.clip = name;
+    return true;
+  }
   next.reset().setEffectiveWeight(1).fadeIn(0.25).play();
   if (currentAction) currentAction.fadeOut(0.25);
   currentAction = next;
@@ -576,6 +588,109 @@ function attachTool(handBone) {
   tool.rotation.set(1.15, 0.25, 0.35);
   handBone.add(tool);
   return tool;
+}
+
+/**
+ * The delver: DeepWood's character is a hooded figure in a muted teal cloak with
+ * a pickaxe (see the game's `public/art/hunter.png`). The placeholder body is the
+ * three.js "vanguard" soldier, which is the wrong silhouette entirely, so this
+ * clothes it — the visor is hidden, the uniform is tinted toward the game's
+ * palette, and a hood, collar, cloak and belt are built in code and bound to the
+ * rig's OWN bones so they move with the animation instead of floating beside it.
+ *
+ * Honest scope: this is a dressed placeholder, not the real avatar. It fixes the
+ * silhouette (hooded, cloaked, pickaxe) for ~600 triangles and no download; the
+ * licensed character is still the thing to swap in.
+ *
+ * The rig is in units ~100x a metre (measured: the head bone's world scale is
+ * 0.0099), so every part is built in METRES and bound with a compensating scale —
+ * otherwise a "0.17 m hood" comes out two storeys tall.
+ */
+function dressDelver(root) {
+  root.updateMatrixWorld(true);
+  const bones = {};
+  root.traverse((o) => { if (o.isBone) bones[o.name.replace(/^mixamorig/, '')] = o; });
+  if (!bones.Head || !bones.Neck || !bones.Spine1 || !bones.Hips) return null;
+
+  const cloth = new THREE.MeshStandardMaterial({ color: 0x2f524a, roughness: 0.93, metalness: 0, side: THREE.DoubleSide });
+  const clothDark = new THREE.MeshStandardMaterial({ color: 0x223b36, roughness: 0.95, metalness: 0, side: THREE.DoubleSide });
+  const hollow = new THREE.MeshStandardMaterial({ color: 0x0b1210, roughness: 1, metalness: 0 });
+  const leather = new THREE.MeshStandardMaterial({ color: 0x2b2118, roughness: 0.85, metalness: 0 });
+
+  const inv = new THREE.Matrix4();
+  const ws = new THREE.Vector3();
+  /** Parent a metre-sized part to a bone at a WORLD position. */
+  const bind = (part, parentBone, worldPos) => {
+    parentBone.updateWorldMatrix(true, false);
+    inv.copy(parentBone.matrixWorld).invert();
+    part.position.copy(worldPos).applyMatrix4(inv);
+    parentBone.getWorldScale(ws);
+    part.scale.setScalar(1 / ws.x);
+    part.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+    parentBone.add(part);
+    return part;
+  };
+
+  // Every height below is MEASURED off this rig, in metres above his feet, not
+  // guessed: head 1.472, neck 1.442, chest (Spine2) 1.305, shoulders 1.419,
+  // hips 0.975, knee 0.563. The first attempt placed the hood 0.045 m above the
+  // head BONE and it sat around his collarbones, because the head is another
+  // 0.16 m above that joint.
+  const base = root.position;
+  const at = (y, dz = 0) => new THREE.Vector3(base.x, base.y + y, base.z + dz);
+
+  // Hood: an egg over the head and helmet. A shade deeper than it is wide and
+  // pushed back, because a hood bulges behind the skull.
+  const hoodGeo = new THREE.SphereGeometry(0.17, 18, 14);
+  hoodGeo.scale(1.0, 1.05, 1.12);
+  const hood = new THREE.Mesh(hoodGeo, cloth);
+  bind(hood, bones.Head, at(1.645, 0.03));
+
+  // The face is a void, not a face — hunter.png shows a shadowed hood interior.
+  const face = new THREE.Mesh(new THREE.SphereGeometry(0.12, 12, 10), hollow);
+  bind(face, bones.Head, at(1.62, -0.05));
+
+  // Mantle: a short shoulder cape that joins the hood to the cloak.
+  const mantle = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.2, 0.26, 16, 1, true), cloth);
+  bind(mantle, bones.Spine2, at(1.33));
+
+  // Cloak: NOT a cone. The first version was a full 360-degree cylinder from the
+  // shoulders to the ground and he read as a traffic cone. This is a cape — 210
+  // degrees, so the back and sides are covered and the front stays open — from
+  // the shoulders to mid-calf, hanging off a pivot at the chest so it can sway.
+  const cloakPivot = new THREE.Group();
+  const cloak = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.19, 0.34, 0.95, 18, 1, true, -Math.PI / 12, Math.PI * 7 / 6),
+    clothDark,
+  );
+  cloak.position.y = -0.475;
+  cloakPivot.add(cloak);
+  bind(cloakPivot, bones.Spine2, at(1.42, 0.03));
+
+  // Belt, visible through the open front.
+  const belt = new THREE.Mesh(new THREE.TorusGeometry(0.165, 0.022, 8, 18), leather);
+  belt.rotation.x = Math.PI / 2;
+  bind(belt, bones.Hips, at(1.0));
+
+  // Under the hood there is only shadow: drop the visor, and tint the uniform to
+  // the game's muted teal. Cloned so the shared source material is untouched.
+  const visor = root.getObjectByName('vanguard_visor');
+  if (visor) visor.visible = false;
+  root.traverse((o) => {
+    if ((o.isMesh || o.isSkinnedMesh) && o.material && o.material.map && /vanguard/i.test(o.name)) {
+      o.material = o.material.clone();
+      o.material.color.set(0x6b8a82);
+      o.material.roughness = 0.93;
+    }
+  });
+
+  root.userData.delver = { hood, face, mantle, cloakPivot, belt };
+  state.avatar = {
+    dressed: true, hood: true, cape: true, visorHidden: Boolean(visor),
+    tint: '#6b8a82', parts: 5,
+    fit: { hoodAt: 1.645, mantleAt: 1.33, capeTop: 1.42, capeTo: 0.47 },
+  };
+  return root.userData.delver;
 }
 
 async function loadCharacter() {
@@ -611,6 +726,7 @@ async function loadCharacter() {
     if (!hand && /right.?hand/i.test(o.name)) hand = o;
   });
   if (hand) root.userData.tool = attachTool(hand);
+  dressDelver(root); // the hooded-delver silhouette, see above
   state.character = root;
   state.clips = Object.keys(actions);
   state.hasTool = Boolean(hand);
@@ -772,6 +888,15 @@ function tick() {
       character.position.y = heightAt(character.position.x, character.position.z) + jumpH;
     }
     setClip(gait);
+
+    // Cloak sway: a trailing lean while he is moving, a slow breath otherwise.
+    // Small on purpose — a cloak that flaps like a flag reads as a bug.
+    const delver = character.userData.delver;
+    if (delver) {
+      const moving = gait !== 'Idle';
+      delver.cloakPivot.rotation.x = (moving ? 0.1 : 0.02) + Math.sin(windTime * 3.1) * 0.02;
+    }
+
     if (metro.follow) {
       // Third-person chase rig, three parts:
       //   1. translate with him (otherwise he shrinks into the distance),
