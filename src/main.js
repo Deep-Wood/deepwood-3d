@@ -647,8 +647,11 @@ function dressDelver(root) {
   bind(hood, bones.Head, at(1.645, 0.03));
 
   // The face is a void, not a face — hunter.png shows a shadowed hood interior.
-  const face = new THREE.Mesh(new THREE.SphereGeometry(0.12, 12, 10), hollow);
-  bind(face, bones.Head, at(1.62, -0.05));
+  // It has to protrude PAST the hood's front face or it is simply invisible
+  // inside it: the hood reaches -0.19 in z (0.17 radius, stretched 1.12), so a
+  // 0.125 sphere centred any closer than ~-0.07 never shows.
+  const face = new THREE.Mesh(new THREE.SphereGeometry(0.125, 14, 12), hollow);
+  bind(face, bones.Head, at(1.63, -0.088));
 
   // Mantle: a short shoulder cape that joins the hood to the cloak.
   const mantle = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.2, 0.26, 16, 1, true), cloth);
