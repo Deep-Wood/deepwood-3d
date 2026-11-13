@@ -620,14 +620,26 @@ function dressDelver(root) {
   root.traverse((o) => { if (o.isBone) bones[o.name.replace(/^mixamorig/, '')] = o; });
   if (!bones.Head || !bones.Neck || !bones.Spine1 || !bones.Hips) return null;
 
-  // Mid-tones, deliberately. The first pass used the darkest version of the game's
-  // palette and the whole character rendered as a black silhouette in this light —
-  // a dark cloak on a dark forest reads as a hole, not as cloth. These are the
-  // same hues with enough value to show form.
-  const cloth = new THREE.MeshStandardMaterial({ color: 0x4a7268, roughness: 0.93, metalness: 0, side: THREE.DoubleSide });
-  const clothDark = new THREE.MeshStandardMaterial({ color: 0x37564f, roughness: 0.95, metalness: 0, side: THREE.DoubleSide });
-  const hollow = new THREE.MeshStandardMaterial({ color: 0x0e1614, roughness: 1, metalness: 0 });
-  const leather = new THREE.MeshStandardMaterial({ color: 0x5d4630, roughness: 0.85, metalness: 0 });
+  // A LAYERED palette: separate hue and value per garment, not one grey-teal. The
+  // "same colour all through" was a real flaw — tunic, cape, trousers were all
+  // within a few percent of each other, so eleven pieces read as one mass.
+  //
+  // Roughness is part of the separation: cloth is matte, leather and metal pick up
+  // a sheen, so the layers also respond differently to the light rather than only
+  // differing in flat colour. All of it stays mid-tone, because the darkest
+  // version of this palette rendered as a silhouette in this forest.
+  const mat = (color, roughness, extra = {}) => new THREE.MeshStandardMaterial({
+    color, roughness, metalness: 0, ...extra,
+  });
+  const cloth = mat(0x4a7268, 0.93, { side: THREE.DoubleSide });      // tunic: mid teal
+  const clothMid = mat(0x5c7d6b, 0.94, { side: THREE.DoubleSide });   // sleeves + mantle: paler green
+  const clothDark = mat(0x2c4450, 0.96, { side: THREE.DoubleSide });  // cape: deep blue-teal
+  const hoodMat = mat(0x3f6157, 0.92, { side: THREE.DoubleSide });    // hood: between the two
+  const trouserMat = mat(0x474b3a, 0.97);                             // trousers: dark olive
+  const leather = mat(0x6b4a2f, 0.62);                                // bracers: warm brown, slight sheen
+  const beltMat = mat(0x46301f, 0.55);                                // belt: darker, waxier
+  const bootMat = mat(0x33251a, 0.48);                                // boots: darkest, polished
+  const hollow = mat(0x0e1614, 1);                                    // the hood's interior
 
   const inv = new THREE.Matrix4();
   const ws = new THREE.Vector3();
@@ -682,7 +694,7 @@ function dressDelver(root) {
   // bulges behind the skull. Radius 0.62 head-heights, centre 0.58 up.
   const hoodGeo = new THREE.SphereGeometry(0.62 * headH, 18, 14);
   hoodGeo.scale(1.0, 1.05, 1.12);
-  const hood = new THREE.Mesh(hoodGeo, cloth);
+  const hood = new THREE.Mesh(hoodGeo, hoodMat);
   bind(hood, bones.Head, at(headY + 0.58 * headH, 0.06 * headH));
 
   // The face is a void, not a face — hunter.png shows a shadowed hood interior.
@@ -692,7 +704,7 @@ function dressDelver(root) {
 
   // Mantle: a short shoulder cape that joins the hood to the cloak.
   const mantle = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.13 * ref, 0.2 * ref, 0.26 * ref, 16, 1, true), cloth,
+    new THREE.CylinderGeometry(0.13 * ref, 0.2 * ref, 0.26 * ref, 16, 1, true), clothMid,
   );
   bind(mantle, bones.Spine2, at(chestY + 0.022 * ref));
 
@@ -711,7 +723,7 @@ function dressDelver(root) {
   bind(cloakPivot, bones.Spine2, at(shoulderY, 0.03 * ref));
 
   // Belt, visible through the open front.
-  const belt = new THREE.Mesh(new THREE.TorusGeometry(0.165 * ref, 0.022 * ref, 8, 18), leather);
+  const belt = new THREE.Mesh(new THREE.TorusGeometry(0.165 * ref, 0.022 * ref, 8, 18), beltMat);
   belt.rotation.x = Math.PI / 2;
   bind(belt, bones.Hips, at(hipsY + 0.022 * ref));
 
@@ -723,8 +735,9 @@ function dressDelver(root) {
   // measured on this rig: upper arm 0.28, forearm 0.285, thigh 0.446, calf 0.448,
   // foot 0.139. Radii are human proportions, which is safe here because every
   // character is normalised to 1.82 m before this runs.
-  const trouser = new THREE.MeshStandardMaterial({ color: 0x3f4f49, roughness: 0.96, metalness: 0 });
-  const boot = new THREE.MeshStandardMaterial({ color: 0x4a3a2a, roughness: 0.9, metalness: 0 });
+  const trouser = trouserMat;
+  const boot = bootMat;
+  const sleeve = clothMid;
   const madeGarments = [];
 
   /** Cloth tube from bone A toward bone B, oriented along the bone. */
@@ -756,8 +769,8 @@ function dressDelver(root) {
   );
   if (bind(tunic, bones.Spine1, at((shoulderY + hipsY) / 2))) madeGarments.push('tunic');
 
-  tube(cloth, 0.055, 'LeftArm', 'LeftForeArm', 0.05, 'sleeve L');
-  tube(cloth, 0.055, 'RightArm', 'RightForeArm', 0.05, 'sleeve R');
+  tube(sleeve, 0.055, 'LeftArm', 'LeftForeArm', 0.05, 'sleeve L');
+  tube(sleeve, 0.055, 'RightArm', 'RightForeArm', 0.05, 'sleeve R');
   tube(leather, 0.05, 'LeftForeArm', 'LeftHand', 0.02, 'bracer L');
   tube(leather, 0.05, 'RightForeArm', 'RightHand', 0.02, 'bracer R');
   tube(trouser, 0.095, 'LeftUpLeg', 'LeftLeg', 0.06, 'trouser L');
