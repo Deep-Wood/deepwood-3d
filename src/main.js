@@ -620,10 +620,14 @@ function dressDelver(root) {
   root.traverse((o) => { if (o.isBone) bones[o.name.replace(/^mixamorig/, '')] = o; });
   if (!bones.Head || !bones.Neck || !bones.Spine1 || !bones.Hips) return null;
 
-  const cloth = new THREE.MeshStandardMaterial({ color: 0x2f524a, roughness: 0.93, metalness: 0, side: THREE.DoubleSide });
-  const clothDark = new THREE.MeshStandardMaterial({ color: 0x223b36, roughness: 0.95, metalness: 0, side: THREE.DoubleSide });
-  const hollow = new THREE.MeshStandardMaterial({ color: 0x0b1210, roughness: 1, metalness: 0 });
-  const leather = new THREE.MeshStandardMaterial({ color: 0x2b2118, roughness: 0.85, metalness: 0 });
+  // Mid-tones, deliberately. The first pass used the darkest version of the game's
+  // palette and the whole character rendered as a black silhouette in this light —
+  // a dark cloak on a dark forest reads as a hole, not as cloth. These are the
+  // same hues with enough value to show form.
+  const cloth = new THREE.MeshStandardMaterial({ color: 0x4a7268, roughness: 0.93, metalness: 0, side: THREE.DoubleSide });
+  const clothDark = new THREE.MeshStandardMaterial({ color: 0x37564f, roughness: 0.95, metalness: 0, side: THREE.DoubleSide });
+  const hollow = new THREE.MeshStandardMaterial({ color: 0x0e1614, roughness: 1, metalness: 0 });
+  const leather = new THREE.MeshStandardMaterial({ color: 0x5d4630, roughness: 0.85, metalness: 0 });
 
   const inv = new THREE.Matrix4();
   const ws = new THREE.Vector3();
@@ -662,24 +666,29 @@ function dressDelver(root) {
   const headW = bones.Head.getWorldPosition(new THREE.Vector3());
   const topW = bones.HeadTop_End
     ? bones.HeadTop_End.getWorldPosition(new THREE.Vector3())
-    : headW.clone().add(new THREE.Vector3(0, 0.256, 0));
-  const skull = Math.max(headW.distanceTo(topW), 0.12);
-  const ref = skull / 0.256; // 1.0 = the soldier, which is what the numbers below were tuned on
+    : headW.clone().add(new THREE.Vector3(0, 0.242, 0));
+  // HEAD HEIGHT (vertical), not the 3D Head->HeadTop distance: the 3D distance
+  // mixes the head's length with its width, and sizing off it put the hood's
+  // centre 3.5 cm below the crown — so the hood sat ON the head like a ball
+  // instead of around it, which is exactly what the front view showed.
+  const headH = Math.max(Math.abs(topW.y - headW.y), 0.12);
+  const ref = headH / 0.242; // 1.0 = the soldier, which is what the numbers below were tuned on
 
   const base = root.position;
   const at = (y, dz = 0) => new THREE.Vector3(base.x, base.y + y, base.z + dz);
 
-  // Hood: an egg over the head, sitting 0.66 skulls up and a shade deeper than it
-  // is wide, pushed back because a hood bulges behind the skull.
-  const hoodGeo = new THREE.SphereGeometry(0.17 * ref, 18, 14);
+  // Hood: an egg centred on the middle of the head, reaching from the jaw to just
+  // above the crown, a shade deeper than it is wide and pushed back because a hood
+  // bulges behind the skull. Radius 0.62 head-heights, centre 0.58 up.
+  const hoodGeo = new THREE.SphereGeometry(0.62 * headH, 18, 14);
   hoodGeo.scale(1.0, 1.05, 1.12);
   const hood = new THREE.Mesh(hoodGeo, cloth);
-  bind(hood, bones.Head, at(headY + 0.169 * ref, 0.03 * ref));
+  bind(hood, bones.Head, at(headY + 0.58 * headH, 0.06 * headH));
 
   // The face is a void, not a face — hunter.png shows a shadowed hood interior.
   // It has to protrude PAST the hood's front face or it is invisible inside it.
-  const face = new THREE.Mesh(new THREE.SphereGeometry(0.125 * ref, 14, 12), hollow);
-  bind(face, bones.Head, at(headY + 0.154 * ref, -0.088 * ref));
+  const face = new THREE.Mesh(new THREE.SphereGeometry(0.45 * headH, 14, 12), hollow);
+  bind(face, bones.Head, at(headY + 0.5 * headH, -0.3 * headH));
 
   // Mantle: a short shoulder cape that joins the hood to the cloak.
   const mantle = new THREE.Mesh(
@@ -706,23 +715,86 @@ function dressDelver(root) {
   belt.rotation.x = Math.PI / 2;
   bind(belt, bones.Hips, at(hipsY + 0.022 * ref));
 
-  // Under the hood there is only shadow: drop the visor, and tint the uniform to
-  // the game's muted teal. Cloned so the shared source material is untouched.
+  // ---- garments, for a body that has none ----------------------------------
+  // A bare Mixamo download ("Beta") is a rig with no clothes and no texture maps —
+  // there is no clothed version of it to fetch, so the clothing is geometry.
+  //
+  // Every piece is a tube along a bone and is sized from that bone's own length,
+  // measured on this rig: upper arm 0.28, forearm 0.285, thigh 0.446, calf 0.448,
+  // foot 0.139. Radii are human proportions, which is safe here because every
+  // character is normalised to 1.82 m before this runs.
+  const trouser = new THREE.MeshStandardMaterial({ color: 0x3f4f49, roughness: 0.96, metalness: 0 });
+  const boot = new THREE.MeshStandardMaterial({ color: 0x4a3a2a, roughness: 0.9, metalness: 0 });
+  const madeGarments = [];
+
+  /** Cloth tube from bone A toward bone B, oriented along the bone. */
+  const tube = (mat, r, aName, bName, extra = 0.04, label = '') => {
+    const A = bones[aName];
+    const B = bones[bName];
+    if (!A || !B) return null;
+    A.updateWorldMatrix(true, false);
+    const pa = A.getWorldPosition(new THREE.Vector3());
+    const pb = B.getWorldPosition(new THREE.Vector3());
+    const dir = pb.clone().sub(pa);
+    const len = dir.length() + extra;
+    dir.normalize();
+    const mesh = new THREE.Mesh(
+      new THREE.CylinderGeometry(r * ref, r * 0.92 * ref, len, 12, 1, false), mat,
+    );
+    // +Y of the cylinder must point from A to B, expressed in A's own frame.
+    const invQ = A.getWorldQuaternion(new THREE.Quaternion()).invert();
+    const localDir = dir.clone().applyQuaternion(invQ).normalize();
+    mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), localDir);
+    const bound = bind(mesh, A, pa.clone().addScaledVector(dir, len / 2 - extra * 0.5));
+    if (bound) madeGarments.push(label || `${aName}->${bName}`);
+    return bound;
+  };
+
+  // Tunic over the torso, hips to shoulders.
+  const tunic = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.2 * ref, 0.175 * ref, (shoulderY - hipsY) * 1.25, 14, 1, true), cloth,
+  );
+  if (bind(tunic, bones.Spine1, at((shoulderY + hipsY) / 2))) madeGarments.push('tunic');
+
+  tube(cloth, 0.055, 'LeftArm', 'LeftForeArm', 0.05, 'sleeve L');
+  tube(cloth, 0.055, 'RightArm', 'RightForeArm', 0.05, 'sleeve R');
+  tube(leather, 0.05, 'LeftForeArm', 'LeftHand', 0.02, 'bracer L');
+  tube(leather, 0.05, 'RightForeArm', 'RightHand', 0.02, 'bracer R');
+  tube(trouser, 0.095, 'LeftUpLeg', 'LeftLeg', 0.06, 'trouser L');
+  tube(trouser, 0.095, 'RightUpLeg', 'RightLeg', 0.06, 'trouser R');
+  tube(boot, 0.075, 'LeftLeg', 'LeftFoot', 0.1, 'boot L');
+  tube(boot, 0.075, 'RightLeg', 'RightFoot', 0.1, 'boot R');
+  tube(boot, 0.055, 'LeftFoot', 'LeftToeBase', 0.08, 'foot L');
+  tube(boot, 0.055, 'RightFoot', 'RightToeBase', 0.08, 'foot R');
+
+  // Under the hood there is only shadow: drop the visor, and tint the body.
+  // A textured body takes the game's muted teal; an UNTEXTURED one (a bare
+  // mannequin download) takes a dark under-layer colour, so whatever the garments
+  // do not cover stops reading as bare skin. Cloned so shared materials are safe.
   const visor = root.getObjectByName('vanguard_visor');
   if (visor) visor.visible = false;
+  let untextured = 0;
   root.traverse((o) => {
-    if ((o.isMesh || o.isSkinnedMesh) && o.material && o.material.map && /vanguard/i.test(o.name)) {
-      o.material = o.material.clone();
-      o.material.color.set(0x6b8a82);
-      o.material.roughness = 0.93;
+    if ((o.isMesh || o.isSkinnedMesh) && o.material) {
+      const hasMap = Boolean(o.material.map);
+      if (hasMap && !/vanguard/i.test(o.name)) return;
+      if (!hasMap) untextured++;
+      const m = o.material.clone();
+      m.color.set(hasMap ? 0x6b8a82 : 0x4b5148); // untextured bodies: a grey under-layer, not near-black
+      m.roughness = 0.93;
+      o.material = m;
     }
   });
-
-  root.userData.delver = { hood, face, mantle, cloakPivot, belt };
+  root.userData.delver = {
+    hood, face, mantle, cloakPivot, belt,
+    tintMode: untextured ? 'under-layer (no maps in file)' : 'teal over texture',
+  };
   state.avatar = {
     dressed: true, hood: true, cape: true, visorHidden: Boolean(visor),
-    tint: '#6b8a82', parts: 5,
-    fit: { skull: +skull.toFixed(3), ref: +ref.toFixed(3), hoodAt: +(headY + 0.169 * ref).toFixed(3) },
+    garments: madeGarments, garmentCount: madeGarments.length,
+    tint: untextured ? '#4b5148 under-layer' : '#6b8a82 over texture',
+    fit: { headH: +headH.toFixed(3), ref: +ref.toFixed(3),
+           hoodAt: +(headY + 0.58 * headH).toFixed(3), hoodR: +(0.62 * headH).toFixed(3) },
   };
   return root.userData.delver;
 }
