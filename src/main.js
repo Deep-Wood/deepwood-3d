@@ -854,8 +854,23 @@ async function loadCharacter() {
   root.scale.multiplyScalar(1.82 / h);
   root.updateMatrixWorld(true);
   // Feet to zero. Kept as an offset so the spawn placement below can carry it.
+  //
+  // Use the foot BONES for a skinned character. Per the glTF spec a skinned mesh's
+  // NODE transform is ignored, so Box3.setFromObject — which applies that transform —
+  // reports a box that is NOT where the skin renders. In this file the skeleton (and
+  // therefore the rendered skin) sits ~0.9 m below that box, so the old lift left him
+  // buried to the waist in the terrain: measured toe-bone world y -0.725 with the root
+  // on the ground, hips at 93% of the screen height, feet 45% below the bottom edge.
+  // The bones are the truth; the box is only right for a rigless mesh.
   const fit = new THREE.Box3().setFromObject(root);
-  root.position.y -= fit.min.y;
+  root.updateMatrixWorld(true);
+  let groundRef = fit.min.y;
+  if (headBone && footBone) {
+    const footY = footBone.getWorldPosition(new THREE.Vector3()).y;
+    const headY = headBone.getWorldPosition(new THREE.Vector3()).y;
+    groundRef = Math.min(footY, headY) - 0.04;   // sole sits just under the toe joint
+  }
+  root.position.y -= groundRef;
 
   root.traverse((o) => {
     if (o.isMesh || o.isSkinnedMesh) {
@@ -876,7 +891,8 @@ async function loadCharacter() {
   character = root;
   state.characterFit = {
     file: CHAR_FILE, rawHeight: +h.toFixed(3), upFixed,
-    feetOffset: +fit.min.y.toFixed(3), scaled: +(1.82 / h).toFixed(4),
+    feetOffset: +groundRef.toFixed(3), scaled: +(1.82 / h).toFixed(4),
+    groundFrom: headBone && footBone ? 'foot bones' : 'bind box (rigless)',
     headBone: headBone ? headBone.name : null,
     footBone: footBone ? footBone.name : null,
     upVec: upVec ? [+upVec.x.toFixed(2), +upVec.y.toFixed(2), +upVec.z.toFixed(2)] : null,
