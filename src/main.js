@@ -1113,7 +1113,11 @@ function tick() {
       }
     }
 
-    if (gait !== 'Idle') {
+    // A character with no skeleton cannot walk: translating it slides a rigid statue
+    // across the terrain, which reads as swimming (measured on the unrigged sculpt:
+    // 0 bones, position advancing ~1.5 m per sample with every limb frozen). Stand
+    // still instead — the preview is still useful for judging the model itself.
+    if (gait !== 'Idle' && state.characterRig === 'skinned') {
       const speed = gait === 'Run' ? 4.6 : 1.7;
       const dx = keysDown ? move.x : -Math.sin(character.rotation.y);
       const dz = keysDown ? move.z : -Math.cos(character.rotation.y);
