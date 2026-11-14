@@ -956,7 +956,27 @@ async function loadCharacter() {
     if (!hand && /right.?hand/i.test(o.name)) hand = o;
   });
   if (hand) root.userData.tool = attachTool(hand);
-  dressDelver(root); // the hooded-delver silhouette, see above
+
+  // A candidate that brings its OWN appearance must not be dressed. The procedural
+  // hood, cape, tunic, bracers, trousers and boots are sized from THIS rig's joints
+  // for a body that has none — so on a fully modelled, textured character they slice
+  // through his own sculpted clothing and swing on the limbs with the animation, which
+  // reads exactly as "cut in half" and "like he is swimming". Baked vertex colours
+  // (COLOR_0, which is what an image-to-3D texture bake produces) are the signal that
+  // the character already has its own clothing, texture and colour. The tint and the
+  // visor hiding live in dressDelver too, so they are skipped with it.
+  let selfAppearance = false;
+  root.traverse((o) => {
+    if (!selfAppearance && o.isMesh && o.geometry.getAttribute('color')) selfAppearance = true;
+  });
+  if (selfAppearance) {
+    state.avatar = {
+      dressed: false, garments: [], garmentCount: 0,
+      reason: 'character carries its own appearance (COLOR_0) — procedural garments skipped',
+    };
+  } else {
+    dressDelver(root); // the hooded-delver silhouette, see above
+  }
   setClip('Idle', { force: true }); // normal entry point: full weight, no fade
   state.character = root;
   state.clips = Object.keys(actions);
