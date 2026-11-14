@@ -886,6 +886,20 @@ async function loadCharacter() {
       : null,
   };
 
+  // A rigless candidate — an image-to-3D sculpt, say — has no bones to drive, so
+  // there is nothing to animate and nothing to dress: it loads, it stands, and the
+  // code-driven movement still moves the root. Guard rather than crash.
+  let hasBones = false;
+  root.traverse((o) => { if (o.isBone) hasBones = true; });
+  if (!hasBones) {
+    state.characterRig = 'none (static mesh — needs rigging)';
+    state.character = root;
+    state.clips = [];
+    state.hasTool = false;
+    return root;
+  }
+  state.characterRig = 'skinned';
+
   mixer = new THREE.AnimationMixer(root);
   // Clips: the character's OWN first, always.
   //

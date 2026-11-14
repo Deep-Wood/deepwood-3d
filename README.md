@@ -230,9 +230,36 @@ that keeps going until stopped; and the rig's front is its local **−Z** —
 movement is expressed against −Z (aiming the yaw at the travel vector walks it
 backwards).
 
+## The generated character and the turntable texture bake
+
+The delver is a Hyper3D **Rodin** image-to-3D generation (a hooded medieval outfit,
+1,000,000 triangles, no textures in the free tier), decimated to 98k triangles and
+**textured by baking a screen-recorded turntable video onto it** — see
+`scripts/bake-from-turntable/` for the pipeline and its measured numbers, and
+`scripts/render-bake.py` for the unlit proof renders.
+
+Load it with `?char=rodin-hooded.glb`. Notes that cost time:
+
+- It is a **static sculpt**: no skin, no skeleton, no clips. The loader detects the
+  absence of bones and stands it up without trying to animate or dress it
+  (`state.characterRig === 'none (static mesh — needs rigging)'`). To make it walk
+  it needs a rig — Mixamo's auto-rigger uploads an FBX and returns one with idle,
+  walk and run attached, which is the intended route.
+- The file is quantized (`KHR_mesh_quantization`, decoder-free in three.js) and
+  carries the baked colours in **COLOR_0** — three.js enables `vertexColors`
+  automatically when a geometry has a `color` attribute, so no loader change was
+  needed for the colour itself.
+- Decimation floors at **~98k triangles whatever the ratio or error bound**: an
+  AI-generated sculpt is a fragmented mesh, so a simplifier cannot collapse much
+  more. Judge such assets on that, not on the ratio you asked for.
+- `vite preview` serves the built `dist/`, so a new asset in `public/` needs
+  `npm run build` before it appears — a stale `dist/` copy looks exactly like a
+  loader bug.
+
 ## Licences
 
 - Poly Haven models and textures: **CC0** (polyhaven.com) — no attribution
   required, credited here anyway.
+- The Rodin-generated character is the project owner's own generation.
 - `soldier.glb` from the three.js examples: sample asset, **prototype use
   only** — replace before anything ships.
