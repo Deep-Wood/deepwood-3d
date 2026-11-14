@@ -855,22 +855,14 @@ async function loadCharacter() {
   root.updateMatrixWorld(true);
   // Feet to zero. Kept as an offset so the spawn placement below can carry it.
   //
-  // Use the foot BONES for a skinned character. Per the glTF spec a skinned mesh's
-  // NODE transform is ignored, so Box3.setFromObject — which applies that transform —
-  // reports a box that is NOT where the skin renders. In this file the skeleton (and
-  // therefore the rendered skin) sits ~0.9 m below that box, so the old lift left him
-  // buried to the waist in the terrain: measured toe-bone world y -0.725 with the root
-  // on the ground, hips at 93% of the screen height, feet 45% below the bottom edge.
-  // The bones are the truth; the box is only right for a rigless mesh.
+  // Measured in Blender on rodin-animated.glb: the SKINNED mesh spans z -0.938..0.920
+  // while the raw bind box spans -0.950..0.950 — the skin renders where the box says
+  // (12 mm apart), and the foot BONE sits 0.111 m ABOVE the sole, as an ankle should.
+  // So the bind box is the right reference and the foot-bone variant I tried first was
+  // wrong: it would have placed him ~8 cm lower. Keep the box; bones are for the
+  // up-vector above, not for the floor.
   const fit = new THREE.Box3().setFromObject(root);
-  root.updateMatrixWorld(true);
-  let groundRef = fit.min.y;
-  if (headBone && footBone) {
-    const footY = footBone.getWorldPosition(new THREE.Vector3()).y;
-    const headY = headBone.getWorldPosition(new THREE.Vector3()).y;
-    groundRef = Math.min(footY, headY) - 0.04;   // sole sits just under the toe joint
-  }
-  root.position.y -= groundRef;
+  root.position.y -= fit.min.y;
 
   root.traverse((o) => {
     if (o.isMesh || o.isSkinnedMesh) {
@@ -891,8 +883,7 @@ async function loadCharacter() {
   character = root;
   state.characterFit = {
     file: CHAR_FILE, rawHeight: +h.toFixed(3), upFixed,
-    feetOffset: +groundRef.toFixed(3), scaled: +(1.82 / h).toFixed(4),
-    groundFrom: headBone && footBone ? 'foot bones' : 'bind box (rigless)',
+    feetOffset: +fit.min.y.toFixed(3), scaled: +(1.82 / h).toFixed(4),
     headBone: headBone ? headBone.name : null,
     footBone: footBone ? footBone.name : null,
     upVec: upVec ? [+upVec.x.toFixed(2), +upVec.y.toFixed(2), +upVec.z.toFixed(2)] : null,
