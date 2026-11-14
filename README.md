@@ -240,11 +240,29 @@ The delver is a Hyper3D **Rodin** image-to-3D generation (a hooded medieval outf
 
 Load it with `?char=rodin-hooded.glb`. Notes that cost time:
 
-- It is a **static sculpt**: no skin, no skeleton, no clips. The loader detects the
-  absence of bones and stands it up without trying to animate or dress it
-  (`state.characterRig === 'none (static mesh — needs rigging)'`). To make it walk
-  it needs a rig — Mixamo's auto-rigger uploads an FBX and returns one with idle,
-  walk and run attached, which is the intended route.
+- `?char=rodin-animated.glb` is the **rigged and animated** version. Mixamo's
+  auto-rigger needs a desktop browser (the marker handles cannot be dragged on a
+  phone), so the rig is built here instead: the soldier's 49-bone `mixamorig`
+  skeleton — the one the project already drives — is scaled to the delver's height,
+  fitted inside his mesh, and he is bound to it with bone-heat weights after
+  welding (`scripts/rig/rig-delver.py`).
+- **The clips are retargeted by WORLD orientation** (`scripts/rig/retarget.py`), not by
+  copying the clips' local rotations. The clips were authored for the soldier's
+  T-pose rest while the delver's arms rest 76 deg lower, and skinning is relative to
+  the bind, so local rotations would swing his arms through his own body. Copying
+  each joint's world rotation instead makes the limb point where the source's limb
+  points, measured from the delver's own bind. Verified by rendering the *exported*
+  file's Walk action (`scripts/rig/render-walk.py`): a full stride with the arms
+  swinging in opposition.
+- Rigging notes that cost time: this sculpt is **seam-split** (140,701 verts for
+  48,256 unique positions), which makes bone-heat weighting give up entirely
+  ("failed to find solution for one or more bones", 100% unweighted) until it is
+  welded — `remove_doubles` takes it to 49,117 verts and heat then reports 0
+  unweighted. Blender also takes weights and inverse-bind matrices from the **rest**
+  pose, so the arms had to be rotated in Edit Mode, not Pose Mode.
+- A rigless candidate still loads: the loader detects the absence of bones and stands
+  it up without trying to animate or dress it
+  (`state.characterRig === 'none (static mesh — needs rigging)'`).
 - The file is quantized (`KHR_mesh_quantization`, decoder-free in three.js) and
   carries the baked colours in **COLOR_0** — three.js enables `vertexColors`
   automatically when a geometry has a `color` attribute, so no loader change was
