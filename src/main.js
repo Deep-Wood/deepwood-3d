@@ -168,7 +168,12 @@ app.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(52, innerWidth / innerHeight, 0.1, 500);
-camera.position.set(5.4, 2.9, 7.6);
+// three.js fov is VERTICAL, so a portrait viewport (a phone) sees the same world height
+// at a given distance as a desktop one — the character ends up a small figure in a tall
+// frame. Measured on a 390x844 viewport he occupied ~15% of the height. Pull the opening
+// camera in on a portrait screen so he reads as the subject (~48%).
+const PORTRAIT = innerHeight > innerWidth * 1.2;
+camera.position.set(5.4 * (PORTRAIT ? 0.68 : 1), 2.9 * (PORTRAIT ? 0.82 : 1), 7.6 * (PORTRAIT ? 0.68 : 1));
 
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
@@ -876,8 +881,15 @@ async function loadCharacter() {
   // Compose the spawn heading as a quaternion: assigning rotation.y here would
   // REPLACE the up-correction above, because an Euler write overwrites the whole
   // quaternion.
+  // Face the camp. The follow camera sits BEHIND him, so whatever is in FRONT of him
+  // lands behind him on screen — and spawning him facing away from the fire put the
+  // campfire between the camera and the body, so its crossed logs occluded him from the
+  // waist down. That is the reported "half of it is cut off from waist": a prop, not
+  // the skin (the weights and bind measure clean). Facing the camp puts the view line
+  // clear and the flames behind him.
+  const spawnYaw = Math.atan2(2.15, 2.9);   // the rig faces its local -Z
   root.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(
-    new THREE.Vector3(0, 1, 0), Math.PI * 0.82,
+    new THREE.Vector3(0, 1, 0), spawnYaw,
   ));
   scene.add(root);
   character = root;
