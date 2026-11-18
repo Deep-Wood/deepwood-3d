@@ -84,6 +84,10 @@ const Q = params.has('full') || LITE === 0 ? PROFILES.full
   : PROFILES.light;
 const LITE_K = Q.k;
 const NO_SHADOWS = Q.shadow === 0;
+// ?dress=top|full forces the delver outfit onto a character who has his own
+// textures (the auto-gate would otherwise leave him in them). 'top' keeps his own
+// trousers and boots; 'full' puts ours over them.
+const DRESS = (params.get('dress') || '').toLowerCase();
 
 /**
  * Which character file to load, so candidates can be compared without touching
@@ -635,7 +639,10 @@ function attachTool(handBone) {
  * 0.0099), so every part is built in METRES and bound with a compensating scale —
  * otherwise a "0.17 m hood" comes out two storeys tall.
  */
-function dressDelver(root) {
+// opts.topOnly: skip the trousers and boots, for a character who already has his
+//   own (putting ours over them reads as two pairs of legs). opts.tint: the teal
+//   under-layer, which only makes sense on a body with no texture of its own.
+function dressDelver(root, { topOnly = false, tint = true } = {}) {
   root.updateMatrixWorld(true);
   const bones = {};
   root.traverse((o) => { if (o.isBone) bones[o.name.replace(/^mixamorig/, '')] = o; });
@@ -794,12 +801,14 @@ function dressDelver(root) {
   tube(sleeve, 0.055, 'RightArm', 'RightForeArm', 0.05, 'sleeve R');
   tube(leather, 0.05, 'LeftForeArm', 'LeftHand', 0.02, 'bracer L');
   tube(leather, 0.05, 'RightForeArm', 'RightHand', 0.02, 'bracer R');
-  tube(trouser, 0.095, 'LeftUpLeg', 'LeftLeg', 0.06, 'trouser L');
-  tube(trouser, 0.095, 'RightUpLeg', 'RightLeg', 0.06, 'trouser R');
-  tube(boot, 0.075, 'LeftLeg', 'LeftFoot', 0.1, 'boot L');
-  tube(boot, 0.075, 'RightLeg', 'RightFoot', 0.1, 'boot R');
-  tube(boot, 0.055, 'LeftFoot', 'LeftToeBase', 0.08, 'foot L');
-  tube(boot, 0.055, 'RightFoot', 'RightToeBase', 0.08, 'foot R');
+  if (!topOnly) {
+    tube(trouser, 0.095, 'LeftUpLeg', 'LeftLeg', 0.06, 'trouser L');
+    tube(trouser, 0.095, 'RightUpLeg', 'RightLeg', 0.06, 'trouser R');
+    tube(boot, 0.075, 'LeftLeg', 'LeftFoot', 0.1, 'boot L');
+    tube(boot, 0.075, 'RightLeg', 'RightFoot', 0.1, 'boot R');
+    tube(boot, 0.055, 'LeftFoot', 'LeftToeBase', 0.08, 'foot L');
+    tube(boot, 0.055, 'RightFoot', 'RightToeBase', 0.08, 'foot R');
+  }
 
   // Under the hood there is only shadow: drop the visor, and tint the body.
   // A textured body takes the game's muted teal; an UNTEXTURED one (a bare
@@ -813,10 +822,12 @@ function dressDelver(root) {
       const hasMap = Boolean(o.material.map);
       if (hasMap && !/vanguard/i.test(o.name)) return;
       if (!hasMap) untextured++;
-      const m = o.material.clone();
-      m.color.set(hasMap ? 0x6b8a82 : 0x4b5148); // untextured bodies: a grey under-layer, not near-black
-      m.roughness = 0.93;
-      o.material = m;
+      if (tint) {
+        const m = o.material.clone();
+        m.color.set(hasMap ? 0x6b8a82 : 0x4b5148); // untextured bodies: a grey under-layer, not near-black
+        m.roughness = 0.93;
+        o.material = m;
+      }
     }
   });
   root.userData.delver = {
@@ -1016,13 +1027,15 @@ async function loadCharacter() {
       || (o.material && (o.material.map || o.material.normalMap));
     if (ownAppearance && !/vanguard/i.test(o.name)) selfAppearance = true;
   });
-  if (selfAppearance) {
+  if (selfAppearance && !DRESS) {
     state.avatar = {
       dressed: false, garments: [], garmentCount: 0,
-      reason: 'character carries its own appearance (COLOR_0) — procedural garments skipped',
+      reason: 'character carries its own appearance (own textures or COLOR_0) — procedural garments skipped',
     };
   } else {
-    dressDelver(root); // the hooded-delver silhouette, see above
+    // the hooded-delver silhouette, see above. Forced dressing keeps the character's
+    // own surface: no teal multiply over his textures.
+    dressDelver(root, { topOnly: DRESS === 'top', tint: !DRESS });
   }
   setClip('Idle', { force: true }); // normal entry point: full weight, no fade
   state.character = root;

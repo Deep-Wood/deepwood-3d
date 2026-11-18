@@ -30,9 +30,20 @@ import bpy
 from mathutils import Matrix, Quaternion, Vector
 
 SOL = "public/assets/char/soldier.glb"
-DEL = "public/assets/char/rodin-hooded.glb"
-OUT = "work/rodin/rodin-rigged.glb"
-ARM_DOWN_DEG = 76.0
+# Overridable so any mesh can be put on the project's existing rig:
+#   python scripts/rig/rig-delver.py --del public/assets/char/thug.glb \
+#                                    --out public/assets/char/thug-rigged.glb --arm-down 0
+import argparse
+_ap = argparse.ArgumentParser()
+_ap.add_argument("--del", dest="del_file", default="public/assets/char/rodin-hooded.glb")
+_ap.add_argument("--out", default="work/rodin/rodin-rigged.glb")
+_ap.add_argument("--arm-down", type=float, default=76.0,
+                 help="degrees to drop the arm chain from the skeleton's T-pose rest; "
+                      "0 when the mesh is ALREADY a T-pose (a stock character download)")
+_args = _ap.parse_args()
+DEL = _args.del_file
+OUT = _args.out
+ARM_DOWN_DEG = _args.arm_down
 
 
 def world_bbox(obj):

@@ -29,12 +29,17 @@ import argparse
 _ap = argparse.ArgumentParser()
 _ap.add_argument("--rig", default="work/rodin/rodin-rigged.glb")
 _ap.add_argument("--out", default="work/rodin/rodin-animated.glb")
+_ap.add_argument("--hips-bob", choices=["0", "1"], default="1",
+                 help="drive the Hips bone's translation from the clip. Without it the "
+                      "knee-bend is copied but the hips keep their rest height, so the "
+                      "feet lift off the ground mid-stride (measured: ankle at 0.34 m)")
 _ap.add_argument("--mode", choices=["world", "local"], default="world",
                  help="world = copy each joint's world rotation (needed when the two "
                       "rest poses differ, e.g. our own sculpt rig); local = copy local "
                       "rotations (correct when both files are stock Mixamo rigs)")
 _args = _ap.parse_args()
 MODE = _args.mode
+HIPS_BOB = _args.hips_bob == '1'
 RIG = _args.rig
 OUT = _args.out
 
@@ -97,6 +102,11 @@ for n in pairs:
     dst.pose.bones[n].rotation_mode = "QUATERNION"
 dst.animation_data_create()
 
+HIPS = "mixamorig:Hips"
+src_hips_rest = (SRC_MW @ src.pose.bones[HIPS].matrix).translation.copy() if HIPS in src.pose.bones else None
+dst_hips_rest_local = dst.data.bones[HIPS].head_local.copy() if HIPS in dst.data.bones else None
+print(f"  hips bob: {HIPS_BOB} (src rest {tuple(round(v,3) for v in src_hips_rest) if src_hips_rest else None})")
+
 SKIP = {"tpose"}                       # the rest-pose export, not a gameplay clip
 for act in [a for a in src_actions if a.name.lower() not in SKIP]:
     src.animation_data.action = act
@@ -124,6 +134,17 @@ for act in [a for a in src_actions if a.name.lower() not in SKIP]:
             world_rot[n] = q_target
         for n in pairs:
             dst.pose.bones[n].keyframe_insert("rotation_quaternion", frame=f)
+        if HIPS_BOB and src_hips_rest is not None and HIPS in dst.pose.bones:
+            # Copy the source Hips' WORLD translation delta, expressed in the
+            # destination armature's local space. Rotations alone leave the hips at
+            # their rest height while the knees bend, so the feet float.
+            posed_w = (SRC_MW @ src.pose.bones[HIPS].matrix).translation
+            delta_local = (MY_MW.inverted().to_3x3() @ (posed_w - src_hips_rest))
+            # pose_bone.location is a DELTA from the rest position, not an absolute
+            # local coordinate: adding the rest here lifted the whole body 0.49 m.
+            pb = dst.pose.bones[HIPS]
+            pb.location = delta_local
+            pb.keyframe_insert("location", frame=f)
     fcs = action_fcurves(new)
     for fc in fcs:
         for kp in fc.keyframe_points:
