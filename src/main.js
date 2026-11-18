@@ -642,7 +642,14 @@ function attachTool(handBone) {
 // opts.topOnly: skip the trousers and boots, for a character who already has his
 //   own (putting ours over them reads as two pairs of legs). opts.tint: the teal
 //   under-layer, which only makes sense on a body with no texture of its own.
-function dressDelver(root, { topOnly = false, tint = true } = {}) {
+function dressDelver(root, { set = 'full', tint = true } = {}) {
+  // 'full'  = every garment (the vanguard placeholder)
+  // 'top'   = hood, mantle, cloak, belt, tunic, sleeves, bracers  (keep his own legs)
+  // 'cloak' = hood + cloak + belt only — for a character whose own body is the look,
+  //           where the tunic tube and the sleeve/bracer pair read as a stiff robe and
+  //           doubled arms.
+  const topOnly = set !== 'full';
+  const bare = set === 'cloak';
   root.updateMatrixWorld(true);
   const bones = {};
   root.traverse((o) => { if (o.isBone) bones[o.name.replace(/^mixamorig/, '')] = o; });
@@ -731,10 +738,14 @@ function dressDelver(root, { topOnly = false, tint = true } = {}) {
   bind(face, bones.Head, at(headY + 0.5 * headH, -0.3 * headH));
 
   // Mantle: a short shoulder cape that joins the hood to the cloak.
-  const mantle = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.13 * ref, 0.2 * ref, 0.26 * ref, 16, 1, true), clothMid,
-  );
-  bind(mantle, bones.Spine2, at(chestY + 0.022 * ref));
+  // `mantle` is read again in root.userData.delver below, so it has to stay in scope.
+  let mantle = null;
+  if (!bare) {
+    mantle = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.13 * ref, 0.2 * ref, 0.26 * ref, 16, 1, true), clothMid,
+    );
+    bind(mantle, bones.Spine2, at(chestY + 0.022 * ref));
+  }
 
   // Cloak: NOT a cone. A full 360-degree cylinder from shoulder to ground reads as
   // a traffic cone. This is a cape — 210 degrees, so the back and sides are
@@ -792,15 +803,17 @@ function dressDelver(root, { topOnly = false, tint = true } = {}) {
   };
 
   // Tunic over the torso, hips to shoulders.
-  const tunic = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.2 * ref, 0.175 * ref, (shoulderY - hipsY) * 1.25, 14, 1, true), cloth,
-  );
-  if (bind(tunic, bones.Spine1, at((shoulderY + hipsY) / 2))) madeGarments.push('tunic');
+  if (!bare) {
+    const tunic = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.2 * ref, 0.175 * ref, (shoulderY - hipsY) * 1.25, 14, 1, true), cloth,
+    );
+    if (bind(tunic, bones.Spine1, at((shoulderY + hipsY) / 2))) madeGarments.push('tunic');
 
-  tube(sleeve, 0.055, 'LeftArm', 'LeftForeArm', 0.05, 'sleeve L');
-  tube(sleeve, 0.055, 'RightArm', 'RightForeArm', 0.05, 'sleeve R');
-  tube(leather, 0.05, 'LeftForeArm', 'LeftHand', 0.02, 'bracer L');
-  tube(leather, 0.05, 'RightForeArm', 'RightHand', 0.02, 'bracer R');
+    tube(sleeve, 0.055, 'LeftArm', 'LeftForeArm', 0.05, 'sleeve L');
+    tube(sleeve, 0.055, 'RightArm', 'RightForeArm', 0.05, 'sleeve R');
+    tube(leather, 0.05, 'LeftForeArm', 'LeftHand', 0.02, 'bracer L');
+    tube(leather, 0.05, 'RightForeArm', 'RightHand', 0.02, 'bracer R');
+  }
   if (!topOnly) {
     tube(trouser, 0.095, 'LeftUpLeg', 'LeftLeg', 0.06, 'trouser L');
     tube(trouser, 0.095, 'RightUpLeg', 'RightLeg', 0.06, 'trouser R');
@@ -1035,7 +1048,8 @@ async function loadCharacter() {
   } else {
     // the hooded-delver silhouette, see above. Forced dressing keeps the character's
     // own surface: no teal multiply over his textures.
-    dressDelver(root, { topOnly: DRESS === 'top', tint: !DRESS });
+    dressDelver(root, { set: DRESS === 'full' ? 'full' : DRESS === 'top' ? 'top' : 'cloak',
+                        tint: !DRESS });
   }
   setClip('Idle', { force: true }); // normal entry point: full weight, no fade
   state.character = root;

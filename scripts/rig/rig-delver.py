@@ -37,6 +37,14 @@ import argparse
 _ap = argparse.ArgumentParser()
 _ap.add_argument("--del", dest="del_file", default="public/assets/char/rodin-hooded.glb")
 _ap.add_argument("--out", default="work/rodin/rodin-rigged.glb")
+_ap.add_argument("--normalise-rig", choices=["0", "1"], default="0",
+                 help="bake the armature's tiny node scale into the bones so the GLB's "
+                      "armature node is 1.0 — a 0.01 node scale interacting with the "
+                      "inverse bind matrices makes three.js fling the mesh away")
+_ap.add_argument("--mesh-yaw", type=float, default=0.0,
+                 help="rotate the MESH about Blender's Z before fitting, to align its "
+                      "arm axis with the skeleton's. Some downloads ship with the arms "
+                      "along the depth axis; a mismatch makes the skin explode")
 _ap.add_argument("--arm-down", type=float, default=76.0,
                  help="degrees to drop the arm chain from the skeleton's T-pose rest; "
                       "0 when the mesh is ALREADY a T-pose (a stock character download)")
@@ -44,6 +52,8 @@ _args = _ap.parse_args()
 DEL = _args.del_file
 OUT = _args.out
 ARM_DOWN_DEG = _args.arm_down
+MESH_YAW = _args.mesh_yaw
+NORMALISE_RIG = _args.normalise_rig == '1'
 
 
 def world_bbox(obj):
@@ -102,6 +112,15 @@ delv = max([o for o in bpy.data.objects if o.type == "MESH"], key=lambda o: len(
 for o in bpy.data.objects:
     o.select_set(o is delv)
 bpy.context.view_layer.objects.active = delv
+if MESH_YAW:
+    # The skeleton's arms run along +/-X. If the downloaded mesh has its arms along the
+    # depth axis instead, every arm bone pulls the mesh sideways and the skin tears
+    # apart (measured: a 40 m skinned bounding box on a 1.77 m character).
+    delv.rotation_mode = 'XYZ'   # glTF imports can leave this on QUATERNION, where
+                                 # writing rotation_euler silently does nothing
+    delv.rotation_euler.z += math.radians(MESH_YAW)
+    bpy.context.view_layer.update()
+    print(f"  mesh yaw {MESH_YAW} deg about Z")
 bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
 # Weld coincident vertices FIRST. This sculpt is a seam-split mesh (140k verts for
 # ~48k unique positions). Weights computed on a fragmented mesh differ across the
@@ -306,6 +325,16 @@ bpy.ops.object.mode_set(mode="OBJECT")
 print("wrote bind_front/side/posed.png")
 
 # -------------------------------------------------------------------- export
+if NORMALISE_RIG:
+    # Blender's exporter writes the inverse bind matrices against the bone rest in the
+    # armature's LOCAL space, while three.js multiplies by the bone's WORLD matrix —
+    # which carries this node's 0.0097 scale. Applying the scale removes the mismatch.
+    bpy.ops.object.select_all(action="DESELECT")
+    arm.select_set(True)
+    bpy.context.view_layer.objects.active = arm
+    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+    print(f"  armature scale applied -> {[round(v,4) for v in arm.scale]}")
+
 bpy.ops.object.select_all(action="DESELECT")
 delv.select_set(True)
 arm.select_set(True)
