@@ -173,7 +173,7 @@ const camera = new THREE.PerspectiveCamera(52, innerWidth / innerHeight, 0.1, 50
 // frame. Measured on a 390x844 viewport he occupied ~15% of the height. Pull the opening
 // camera in on a portrait screen so he reads as the subject (~48%).
 const PORTRAIT = innerHeight > innerWidth * 1.2;
-camera.position.set(5.4 * (PORTRAIT ? 0.68 : 1), 2.9 * (PORTRAIT ? 0.82 : 1), 7.6 * (PORTRAIT ? 0.68 : 1));
+camera.position.set(5.4 * (PORTRAIT ? 0.75 : 1), 2.9 * (PORTRAIT ? 0.84 : 1), 7.6 * (PORTRAIT ? 0.75 : 1));
 
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
@@ -1177,11 +1177,18 @@ function tick() {
       //   2. swing around him by his own turn (otherwise the camera keeps a
       //      fixed world bearing and he walks sideways out of "tracking"),
       //   3. pull in when a trunk blocks the line to his chest.
+    //
+    //   The aim is his CHEST (0.95 m), not 1.15 m. He is 1.82 m tall, so aiming at
+    //   1.15 m put the camera's centre above his natural mid-point and his feet fell
+    //   behind the on-screen control bar on a portrait phone: measured on a 390x844
+    //   viewport his feet landed at y=730 with the bar's top edge at 708, i.e. the
+    //   "cut off at the waist / swimming" complaint. A chest-height aim lifts the
+    //   whole figure clear of the bar while keeping him a good size in frame.
       const p = character.position;
       if (!prevFollow) {
         prevFollow = p.clone();
         prevYaw = character.rotation.y;
-        camFocusY = p.y + 1.15;
+        camFocusY = p.y + 0.95;
         prevFocusY = camFocusY;
       }
       // Horizontal: still locked to him exactly, so he can never drift
@@ -1194,7 +1201,7 @@ function tick() {
       // ridge snapped the whole view up and down, which is what made the follow
       // read as rigid rather than continuous. The eye now rides a damped version
       // of his height instead.
-      camFocusY += ((p.y + 1.15) - camFocusY) * (1 - Math.exp(-9 * dt));
+      camFocusY += ((p.y + 0.95) - camFocusY) * (1 - Math.exp(-9 * dt));
       const dySoft = camFocusY - prevFocusY;
       camera.position.y += dySoft;
       prevFocusY = camFocusY;
@@ -1620,6 +1627,9 @@ function rockGeometry(seed = 0) {
       state.hudVisible = visible;
     };
     hudBtn.onclick = () => showHud(hudEl.style.display === 'none');
+    // On a phone the readout covers a third of the screen and hides the character's
+    // head. Start it hidden there; the button still brings it back.
+    if (innerHeight > innerWidth * 1.2) showHud(false);
     addEventListener('keydown', (e) => { if (e.code === 'KeyH') showHud(hudEl.style.display === 'none'); });
 
     // Harness handles: let a test park the camera at a known bearing from the

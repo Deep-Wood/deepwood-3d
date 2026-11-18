@@ -10,6 +10,14 @@ It is deliberately **not** the game. Nothing here touches
 **Live:** https://deepwood-3d.vercel.app/ · **Repo:**
 https://github.com/Deep-Wood/deepwood-3d (public)
 
+**The default character is the soldier** (`soldier.glb` — helmet, pauldrons, cape,
+boots, Mixamo `mixamorig` rig, Idle/Walk/Run clips). The Rodin "delver" below is an
+**optional experiment**, not the default: load it with `?char=rodin-animated.glb`
+(rigged) or `?char=rodin-hooded.glb` (static). A stray untextured icosphere that rode
+along inside `soldier.glb` since the first commit was removed — it was rendering as a
+grey blob around his lower body and, because the loader measures the character with a
+bounding box, it was also skewing his scale and ground placement.
+
 Pushes to `main` auto-deploy (~30 s). The Vercel project was imported through
 the dashboard and lives in the account's personal scope, so the EdgeTeam-scoped
 Vercel connector can't read its builds — verify deploys by checking that the
@@ -230,7 +238,7 @@ that keeps going until stopped; and the rig's front is its local **−Z** —
 movement is expressed against −Z (aiming the yaw at the travel vector walks it
 backwards).
 
-## The generated character and the turntable texture bake
+## The generated character and the turntable texture bake (optional, off by default)
 
 The delver is a Hyper3D **Rodin** image-to-3D generation (a hooded medieval outfit,
 1,000,000 triangles, no textures in the free tier), decimated to 98k triangles and
@@ -238,7 +246,7 @@ The delver is a Hyper3D **Rodin** image-to-3D generation (a hooded medieval outf
 `scripts/bake-from-turntable/` for the pipeline and its measured numbers, and
 `scripts/render-bake.py` for the unlit proof renders.
 
-Load it with `?char=rodin-hooded.glb`. Notes that cost time:
+Load the static sculpt with `?char=rodin-hooded.glb`. Notes that cost time:
 
 - `?char=rodin-animated.glb` is the **rigged and animated** version. Mixamo's
   auto-rigger needs a desktop browser (the marker handles cannot be dragged on a
