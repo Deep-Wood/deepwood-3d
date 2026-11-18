@@ -648,8 +648,18 @@ function dressDelver(root, { set = 'full', tint = true } = {}) {
   // 'cloak' = hood + cloak + belt only — for a character whose own body is the look,
   //           where the tunic tube and the sleeve/bracer pair read as a stiff robe and
   //           doubled arms.
-  const topOnly = set !== 'full';
-  const bare = set === 'cloak';
+  const SETS = {
+    full:  { hood: 1, mantle: 1, cloak: 1, tunic: 1, sleeves: 1, bracers: 1, legs: 1, vest: 0 },
+    top:   { hood: 1, mantle: 1, cloak: 1, tunic: 1, sleeves: 1, bracers: 1, legs: 0, vest: 0 },
+    cloak: { hood: 1, mantle: 0, cloak: 1, tunic: 0, sleeves: 0, bracers: 0, legs: 0, vest: 0 },
+    // For a character whose own design IS the look — masked, bare-armed, cargo pants —
+    // a hood swallows his mask and a robe hides his body. This set leaves his head and
+    // chest bare and adds only what a brigand would actually wear.
+    vest:  { hood: 0, mantle: 0, cloak: 0, tunic: 0, sleeves: 0, bracers: 1, legs: 0, vest: 1 },
+  };
+  const S = SETS[set] || SETS.full;
+  const topOnly = !S.legs;
+  const bare = !S.tunic && !S.mantle;
   root.updateMatrixWorld(true);
   const bones = {};
   root.traverse((o) => { if (o.isBone) bones[o.name.replace(/^mixamorig/, '')] = o; });
@@ -721,28 +731,60 @@ function dressDelver(root, { set = 'full', tint = true } = {}) {
   const headH = Math.max(Math.abs(topW.y - headW.y), 0.12);
   const ref = headH / 0.242; // 1.0 = the soldier, which is what the numbers below were tuned on
 
+  // Bulk: the soldier's numbers describe a broad torso. A gaunt character in the same
+  // skull-lengths gets panels that hang off him and intersect the arms, so every RADIUS
+  // below is scaled by his own chest. Measured from the SKINNED MESH's vertices in the
+  // chest band — the bones are shared between characters, so a bone-based measure comes
+  // out identical for everyone and is useless here.
+  // Median |x| in the chest band: the arms are a minority of the vertices there, so a
+  // max picks up the shoulders (soldier 0.82, thug 0.41) while the median tracks the
+  // torso the garments actually have to fit.
+  const xs = [];
+  root.traverse((o) => {
+    if (!o.isSkinnedMesh) return;
+    const pos = o.geometry && o.geometry.getAttribute('position');
+    if (!pos) return;
+    for (let i = 0; i < pos.count; i++) {
+      const y = pos.getY(i);
+      if (y < 1.24 || y > 1.44) continue;
+      xs.push(Math.abs(pos.getX(i)));
+    }
+  });
+  xs.sort((a, b) => a - b);
+  const chestHalf = xs.length ? xs[xs.length >> 1] : 0.19;
+  // 0.174 is the soldier's own measured median — he is the reference the constants
+  // were tuned on, so his bulk is exactly 1.0 and his garments do not move.
+  const bulk = Math.max(0.6, Math.min(1.5, chestHalf / 0.174));
+  const rr = ref * bulk;
+
   const base = root.position;
   const at = (y, dz = 0) => new THREE.Vector3(base.x, base.y + y, base.z + dz);
 
   // Hood: an egg centred on the middle of the head, reaching from the jaw to just
   // above the crown, a shade deeper than it is wide and pushed back because a hood
   // bulges behind the skull. Radius 0.62 head-heights, centre 0.58 up.
-  const hoodGeo = new THREE.SphereGeometry(0.62 * headH, 18, 14);
-  hoodGeo.scale(1.0, 1.05, 1.12);
-  const hood = new THREE.Mesh(hoodGeo, hoodMat);
-  bind(hood, bones.Head, at(headY + 0.58 * headH, 0.06 * headH));
+  let hood = null;
+  if (S.hood) {
+    const hoodGeo = new THREE.SphereGeometry(0.62 * headH, 18, 14);
+    hoodGeo.scale(1.0, 1.05, 1.12);
+    hood = new THREE.Mesh(hoodGeo, hoodMat);
+    bind(hood, bones.Head, at(headY + 0.58 * headH, 0.06 * headH));
+  }
 
   // The face is a void, not a face — hunter.png shows a shadowed hood interior.
   // It has to protrude PAST the hood's front face or it is invisible inside it.
-  const face = new THREE.Mesh(new THREE.SphereGeometry(0.45 * headH, 14, 12), hollow);
-  bind(face, bones.Head, at(headY + 0.5 * headH, -0.3 * headH));
+  let face = null;
+  if (S.hood) {
+    face = new THREE.Mesh(new THREE.SphereGeometry(0.45 * headH, 14, 12), hollow);
+    bind(face, bones.Head, at(headY + 0.5 * headH, -0.3 * headH));
+  }
 
   // Mantle: a short shoulder cape that joins the hood to the cloak.
   // `mantle` is read again in root.userData.delver below, so it has to stay in scope.
   let mantle = null;
-  if (!bare) {
+  if (S.mantle) {
     mantle = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.13 * ref, 0.2 * ref, 0.26 * ref, 16, 1, true), clothMid,
+      new THREE.CylinderGeometry(0.13 * rr, 0.2 * rr, 0.26 * ref, 16, 1, true), clothMid,
     );
     bind(mantle, bones.Spine2, at(chestY + 0.022 * ref));
   }
@@ -751,18 +793,21 @@ function dressDelver(root, { set = 'full', tint = true } = {}) {
   // a traffic cone. This is a cape — 210 degrees, so the back and sides are
   // covered and the front stays open — shoulders to mid-calf, hanging off a pivot
   // at the chest so it can sway.
-  const cloakPivot = new THREE.Group();
-  const cloak = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.19 * ref, 0.34 * ref, 0.95 * ref, 18, 1, true,
-      -Math.PI / 12, Math.PI * 7 / 6),
-    clothDark,
-  );
-  cloak.position.y = -0.475 * ref;
-  cloakPivot.add(cloak);
-  bind(cloakPivot, bones.Spine2, at(shoulderY, 0.03 * ref));
+  let cloakPivot = null;
+  if (S.cloak) {
+    cloakPivot = new THREE.Group();
+    const cloak = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.19 * rr, 0.34 * rr, 0.95 * ref, 18, 1, true,
+        -Math.PI / 12, Math.PI * 7 / 6),
+      clothDark,
+    );
+    cloak.position.y = -0.475 * ref;
+    cloakPivot.add(cloak);
+    bind(cloakPivot, bones.Spine2, at(shoulderY, 0.03 * ref));
+  }
 
   // Belt, visible through the open front.
-  const belt = new THREE.Mesh(new THREE.TorusGeometry(0.165 * ref, 0.022 * ref, 8, 18), beltMat);
+  const belt = new THREE.Mesh(new THREE.TorusGeometry(0.165 * rr, 0.022 * rr, 8, 18), beltMat);
   belt.rotation.x = Math.PI / 2;
   bind(belt, bones.Hips, at(hipsY + 0.022 * ref));
 
@@ -791,7 +836,7 @@ function dressDelver(root, { set = 'full', tint = true } = {}) {
     const len = dir.length() + extra;
     dir.normalize();
     const mesh = new THREE.Mesh(
-      new THREE.CylinderGeometry(r * ref, r * 0.92 * ref, len, 12, 1, false), mat,
+      new THREE.CylinderGeometry(r * rr, r * 0.92 * rr, len, 12, 1, false), mat,
     );
     // +Y of the cylinder must point from A to B, expressed in A's own frame.
     const invQ = A.getWorldQuaternion(new THREE.Quaternion()).invert();
@@ -803,16 +848,28 @@ function dressDelver(root, { set = 'full', tint = true } = {}) {
   };
 
   // Tunic over the torso, hips to shoulders.
-  if (!bare) {
+  if (S.tunic) {
     const tunic = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.2 * ref, 0.175 * ref, (shoulderY - hipsY) * 1.25, 14, 1, true), cloth,
+      new THREE.CylinderGeometry(0.2 * rr, 0.175 * rr, (shoulderY - hipsY) * 1.25, 14, 1, true), cloth,
     );
     if (bind(tunic, bones.Spine1, at((shoulderY + hipsY) / 2))) madeGarments.push('tunic');
-
+  }
+  if (S.sleeves) {
     tube(sleeve, 0.055, 'LeftArm', 'LeftForeArm', 0.05, 'sleeve L');
     tube(sleeve, 0.055, 'RightArm', 'RightForeArm', 0.05, 'sleeve R');
+  }
+  if (S.bracers) {
     tube(leather, 0.05, 'LeftForeArm', 'LeftHand', 0.02, 'bracer L');
     tube(leather, 0.05, 'RightForeArm', 'RightHand', 0.02, 'bracer R');
+  }
+  if (S.vest) {
+    // open at the front, same 210 degrees the cloak uses: covers back and ribs,
+    // leaves the chest and the mask visible
+    const vest = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.205 * rr, 0.185 * rr, (shoulderY - hipsY) * 1.15,
+        16, 1, true, -Math.PI / 12, Math.PI * 7 / 6), leather,
+    );
+    if (bind(vest, bones.Spine1, at((shoulderY + hipsY) / 2))) madeGarments.push('vest');
   }
   if (!topOnly) {
     tube(trouser, 0.095, 'LeftUpLeg', 'LeftLeg', 0.06, 'trouser L');
@@ -844,14 +901,15 @@ function dressDelver(root, { set = 'full', tint = true } = {}) {
     }
   });
   root.userData.delver = {
-    hood, face, mantle, cloakPivot, belt,
+    hood, face, mantle, cloakPivot, belt, set,
     tintMode: untextured ? 'under-layer (no maps in file)' : 'teal over texture',
   };
   state.avatar = {
-    dressed: true, hood: true, cape: true, visorHidden: Boolean(visor),
+    dressed: true, set, hood: S.hood === 1, cape: S.cloak === 1, visorHidden: Boolean(visor),
     garments: madeGarments, garmentCount: madeGarments.length,
     tint: untextured ? '#4b5148 under-layer' : '#6b8a82 over texture',
     fit: { headH: +headH.toFixed(3), ref: +ref.toFixed(3),
+           chestHalf: +chestHalf.toFixed(3), bulk: +bulk.toFixed(3),
            hoodAt: +(headY + 0.58 * headH).toFixed(3), hoodR: +(0.62 * headH).toFixed(3) },
   };
   return root.userData.delver;
@@ -1040,7 +1098,13 @@ async function loadCharacter() {
       || (o.material && (o.material.map || o.material.normalMap));
     if (ownAppearance && !/vanguard/i.test(o.name)) selfAppearance = true;
   });
-  if (selfAppearance && !DRESS) {
+  if (DRESS === 'none') {
+    // explicit "show me the raw asset" — used to tell a broken garment from a broken mesh
+    state.avatar = {
+      dressed: false, garments: [], garmentCount: 0,
+      reason: 'dress=none: raw asset, no procedural garments',
+    };
+  } else if (selfAppearance && !DRESS) {
     state.avatar = {
       dressed: false, garments: [], garmentCount: 0,
       reason: 'character carries its own appearance (own textures or COLOR_0) — procedural garments skipped',
@@ -1048,8 +1112,8 @@ async function loadCharacter() {
   } else {
     // the hooded-delver silhouette, see above. Forced dressing keeps the character's
     // own surface: no teal multiply over his textures.
-    dressDelver(root, { set: DRESS === 'full' ? 'full' : DRESS === 'top' ? 'top' : 'cloak',
-                        tint: !DRESS });
+    const SETWANT = { full: 'full', top: 'top', cloak: 'cloak', vest: 'vest' };
+    dressDelver(root, { set: SETWANT[DRESS] || 'cloak', tint: !DRESS });
   }
   setClip('Idle', { force: true }); // normal entry point: full weight, no fade
   state.character = root;
@@ -1221,7 +1285,9 @@ function tick() {
     // Cloak sway: a trailing lean while he is moving, a slow breath otherwise.
     // Small on purpose — a cloak that flaps like a flag reads as a bug.
     const delver = character.userData.delver;
-    if (delver) {
+    // cloakPivot is null on the sets that do not build a cloak (vest, and any set with
+    // cloak:0) — dereferencing it killed the whole render loop and left a black canvas.
+    if (delver && delver.cloakPivot) {
       const moving = gait !== 'Idle';
       delver.cloakPivot.rotation.x = (moving ? 0.1 : 0.02) + Math.sin(windTime * 3.1) * 0.02;
     }
