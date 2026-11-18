@@ -1113,7 +1113,10 @@ async function loadCharacter() {
     // the hooded-delver silhouette, see above. Forced dressing keeps the character's
     // own surface: no teal multiply over his textures.
     const SETWANT = { full: 'full', top: 'top', cloak: 'cloak', vest: 'vest' };
-    dressDelver(root, { set: SETWANT[DRESS] || 'cloak', tint: !DRESS });
+    // Each character defaults to the set that suits it; ?dress= overrides.
+    const SETDEFAULT = /thug/i.test(CHAR_FILE) ? 'vest' : 'cloak';
+    dressDelver(root, { set: SETWANT[DRESS] || SETDEFAULT,
+                        tint: !DRESS && !/thug/i.test(CHAR_FILE) });
   }
   setClip('Idle', { force: true }); // normal entry point: full weight, no fade
   state.character = root;
