@@ -22,8 +22,21 @@ import bpy
 from mathutils import Matrix, Quaternion, Vector
 
 SOL = "public/assets/char/soldier.glb"
-RIG = "work/rodin/rodin-rigged.glb"
-OUT = "work/rodin/rodin-animated.glb"
+# Overridable so the same baker serves any Mixamo-rigged character:
+#   python scripts/rig/retarget.py --rig public/assets/char/man-textured.glb \
+#                                  --out public/assets/char/man-animated.glb
+import argparse
+_ap = argparse.ArgumentParser()
+_ap.add_argument("--rig", default="work/rodin/rodin-rigged.glb")
+_ap.add_argument("--out", default="work/rodin/rodin-animated.glb")
+_ap.add_argument("--mode", choices=["world", "local"], default="world",
+                 help="world = copy each joint's world rotation (needed when the two "
+                      "rest poses differ, e.g. our own sculpt rig); local = copy local "
+                      "rotations (correct when both files are stock Mixamo rigs)")
+_args = _ap.parse_args()
+MODE = _args.mode
+RIG = _args.rig
+OUT = _args.out
 
 # ------------------------------------------------------------- source: clips
 bpy.ops.wm.read_factory_settings(use_empty=True)
@@ -37,7 +50,8 @@ src.animation_data_create()
 # ------------------------------------------------------- destination: the rig
 bpy.ops.import_scene.gltf(filepath=RIG)
 dst = [o for o in bpy.data.objects if o.type == "ARMATURE" and o is not src][0]
-mesh = [o for o in bpy.data.objects if o.type == "MESH" and o.parent is dst][0]
+_meshes = [o for o in bpy.data.objects if o.type == "MESH"]
+mesh = next((o for o in _meshes if o.parent is dst), None) or _meshes[0]
 MY_MW = dst.matrix_world.copy()
 TO_LOCAL = MY_MW.inverted()
 print(f"destination: {dst.name}, {len(dst.data.bones)} bones, mesh {mesh.name} "
@@ -101,7 +115,12 @@ for act in [a for a in src_actions if a.name.lower() not in SKIP]:
             q_target = (TO_LOCAL @ SRC_MW @ src.pose.bones[n].matrix).to_quaternion()
             p = PARENT[n]
             q_parent = world_rot.get(p, (TO_LOCAL @ MY_MW).to_quaternion())
-            dst.pose.bones[n].rotation_quaternion = (q_parent @ REST_LOCAL[n]).inverted() @ q_target
+            if MODE == "local":
+                # Both files are stock Mixamo rigs in a T-pose, so their LOCAL
+                # rest rotations already agree and the clip can be copied as-is.
+                dst.pose.bones[n].rotation_quaternion = src.pose.bones[n].rotation_quaternion
+            else:
+                dst.pose.bones[n].rotation_quaternion = (q_parent @ REST_LOCAL[n]).inverted() @ q_target
             world_rot[n] = q_target
         for n in pairs:
             dst.pose.bones[n].keyframe_insert("rotation_quaternion", frame=f)

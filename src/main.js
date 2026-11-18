@@ -159,7 +159,10 @@ renderer.setPixelRatio(Math.min(devicePixelRatio, Q.dpr));
 renderer.setSize(innerWidth, innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 0.98;
+// 0.98 was too dark in practice: on a phone the character's own silhouette was the
+// darkest thing in frame and his lower body read as missing entirely. 1.2 lifts the
+// figure (and the ground under him) while the fog and the fire still carry the mood.
+renderer.toneMappingExposure = 1.2;
 renderer.shadowMap.enabled = !NO_SHADOWS;
 // PCF, not PCFSoft: the soft variant takes nine-plus taps per fragment, and on a
 // scene this full of alpha-tested leaves that is the dominant fill cost.
@@ -252,6 +255,19 @@ scene.add(hemi);
 const fill = new THREE.DirectionalLight(0xbfd6ff, 0.45);
 fill.position.set(6, 5, 9);
 scene.add(fill);
+
+// Character fill. The scene is deliberately a dark forest, but the PLAYER still has
+// to read: measured on a phone viewport his jeans and boots merged into the near-black
+// foreground and his lower body disappeared entirely ("cut off at the waist" all over
+// again). A small warm light that rides with him, offset toward the camera, lifts the
+// whole figure without flattening the mood. Cheap: one shadow-less point light.
+const charLight = new THREE.PointLight(0xfff0d8, 3.2, 9, 2);
+scene.add(charLight);
+// Rim from behind and above, so his outline separates from the dark ground instead
+// of dissolving into it. Cool colour, opposite the warm fire, reads as moonlight.
+const rim = new THREE.DirectionalLight(0xbfd4ff, 1.1);
+scene.add(rim);
+scene.add(rim.target);
 
 const fireLight = new THREE.PointLight(0xff9a3c, 6, 22, 2);
 fireLight.position.set(0, 0.9, 0);
@@ -984,9 +1000,21 @@ async function loadCharacter() {
   // (COLOR_0, which is what an image-to-3D texture bake produces) are the signal that
   // the character already has its own clothing, texture and colour. The tint and the
   // visor hiding live in dressDelver too, so they are skipped with it.
+  // ...and so is a material carrying its own base-colour or normal MAP, which is what
+  // a downloaded character ships. Both mean the character already has its own
+  // clothing, texture and colour.
+  //
+  // The vanguard placeholder is the exception: its uniform HAS maps, but it is the
+  // body this hooded-delver silhouette was built and fitted around, so it keeps being
+  // dressed. Anything else with its own clothing is left alone — dressing a textured
+  // character put our cloak and straps over his own clothes and read as doubled arms
+  // and a floating back panel.
   let selfAppearance = false;
   root.traverse((o) => {
-    if (!selfAppearance && o.isMesh && o.geometry.getAttribute('color')) selfAppearance = true;
+    if (selfAppearance || !o.isMesh) return;
+    const ownAppearance = o.geometry.getAttribute('color')
+      || (o.material && (o.material.map || o.material.normalMap));
+    if (ownAppearance && !/vanguard/i.test(o.name)) selfAppearance = true;
   });
   if (selfAppearance) {
     state.avatar = {
@@ -1185,6 +1213,15 @@ function tick() {
     //   "cut off at the waist / swimming" complaint. A chest-height aim lifts the
     //   whole figure clear of the bar while keeping him a good size in frame.
       const p = character.position;
+      // Keep the character fill riding with him, on the camera side and a little
+      // above his chest, so his own silhouette is always legible against the ground.
+      const toCam = camera.position.clone().sub(p); toCam.y = 0;
+      if (toCam.lengthSq() > 1e-6) toCam.normalize();
+      // Low and close: at chest height it lit his shirt and left his legs black.
+      charLight.position.copy(p).addScaledVector(toCam, 1.25);
+      charLight.position.y = p.y + 0.85;
+      rim.position.set(p.x - 3.4, p.y + 4.2, p.z - 4.2);
+      rim.target.position.copy(p);
       if (!prevFollow) {
         prevFollow = p.clone();
         prevYaw = character.rotation.y;
