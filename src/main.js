@@ -1098,13 +1098,18 @@ async function loadCharacter() {
       || (o.material && (o.material.map || o.material.normalMap));
     if (ownAppearance && !/vanguard/i.test(o.name)) selfAppearance = true;
   });
+  // Characters we have actually tailored a set for arrive dressed; any other character
+  // carrying its own textures is still left alone by the auto-gate below.
+  const TAILORED = /thug/i;
+  const SETDEFAULT = TAILORED.test(CHAR_FILE) ? 'vest' : null;
+
   if (DRESS === 'none') {
     // explicit "show me the raw asset" — used to tell a broken garment from a broken mesh
     state.avatar = {
       dressed: false, garments: [], garmentCount: 0,
       reason: 'dress=none: raw asset, no procedural garments',
     };
-  } else if (selfAppearance && !DRESS) {
+  } else if (selfAppearance && !DRESS && !SETDEFAULT) {
     state.avatar = {
       dressed: false, garments: [], garmentCount: 0,
       reason: 'character carries its own appearance (own textures or COLOR_0) — procedural garments skipped',
@@ -1113,10 +1118,8 @@ async function loadCharacter() {
     // the hooded-delver silhouette, see above. Forced dressing keeps the character's
     // own surface: no teal multiply over his textures.
     const SETWANT = { full: 'full', top: 'top', cloak: 'cloak', vest: 'vest' };
-    // Each character defaults to the set that suits it; ?dress= overrides.
-    const SETDEFAULT = /thug/i.test(CHAR_FILE) ? 'vest' : 'cloak';
-    dressDelver(root, { set: SETWANT[DRESS] || SETDEFAULT,
-                        tint: !DRESS && !/thug/i.test(CHAR_FILE) });
+    dressDelver(root, { set: SETWANT[DRESS] || SETDEFAULT || 'cloak',
+                        tint: !DRESS && !TAILORED.test(CHAR_FILE) });
   }
   setClip('Idle', { force: true }); // normal entry point: full weight, no fade
   state.character = root;
