@@ -1168,6 +1168,14 @@ charButtons.forEach((b) => b.addEventListener('click', () => {
 }));
 markChar();
 
+// ?ui=0 hides the overlay, for clean look-dev shots of a character.
+if (params.get('ui') === '0') {
+  for (const id of ['controls', 'hud']) {
+    const el = document.getElementById(id);
+    if (el) el.style.display = 'none';
+  }
+}
+
 // ---------------------------------------------------------------- resize ---
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
@@ -1336,9 +1344,11 @@ function tick() {
       // above his chest, so his own silhouette is always legible against the ground.
       const toCam = camera.position.clone().sub(p); toCam.y = 0;
       if (toCam.lengthSq() > 1e-6) toCam.normalize();
-      // Low and close: at chest height it lit his shirt and left his legs black.
+      // Low and close: at chest height it lit his shirt and left his legs black, and
+      // black legs against the near-black ground read as "buried to the waist".
+      // Waist height lights the whole figure and separates it from the ground.
       charLight.position.copy(p).addScaledVector(toCam, 1.25);
-      charLight.position.y = p.y + 0.85;
+      charLight.position.y = p.y + 0.5;
       rim.position.set(p.x - 3.4, p.y + 4.2, p.z - 4.2);
       rim.target.position.copy(p);
       if (!prevFollow) {
@@ -1383,6 +1393,13 @@ function tick() {
     sun.target.position.copy(character.position);
     sun.target.updateMatrixWorld();
   }
+
+  // Never let the eye sink under the terrain. The vertical follow is deliberately
+  // damped so jumps and ridges do not snap the view, but that damping LAGS: when he
+  // descends a slope the camera can end up below the local ground, and the near
+  // ground then fills the frame — which is what reads as "half buried in water".
+  const eyeFloor = heightAt(camera.position.x, camera.position.z) + 0.55;
+  if (camera.position.y < eyeFloor) camera.position.y = eyeFloor;
 
   mixer?.update(dt);
   controls.update();
