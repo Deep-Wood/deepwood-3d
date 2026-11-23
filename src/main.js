@@ -1110,10 +1110,10 @@ async function loadCharacter() {
   });
   // Characters we have actually tailored a set for arrive dressed; any other character
   // carrying its own textures is still left alone by the auto-gate below.
-  // thug: his own design is the look -> vest. delver: the hooded-delver outfit is his.
-  const SETDEFAULT = /thug/i.test(CHAR_FILE) ? 'vest'
-                  : /delver/i.test(CHAR_FILE) ? 'full'
-                  : null;
+  // thug: his own design is the look -> vest. The delver shows as the RAW sculpt:
+  // Mr Sam asked for every procedural garment removed ("keep it as original") — and
+  // with the outfit gone his arms read honestly instead of ending at a sleeve cap.
+  const SETDEFAULT = /thug/i.test(CHAR_FILE) ? 'vest' : null;
   const TAILORED = SETDEFAULT !== null;
 
   if (DRESS === 'none') {
