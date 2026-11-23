@@ -571,6 +571,8 @@ function buildUndergrowth() {
 const keys = new Set();
 let character = null;
 let mixer = null;
+/** File-origin-to-soles distance; set per character at load (0 for most files). */
+let footLift = 0;
 const actions = {};
 let currentAction = null;
 
@@ -966,6 +968,14 @@ async function loadCharacter() {
   // up-vector above, not for the floor.
   const fit = new THREE.Box3().setFromObject(root);
   root.position.y -= fit.min.y;
+  // How far the file's own origin sits above his soles: ~0 for a feet-at-origin
+  // file (soldier, thug), ~0.91 for a centred one (the delver, the man). The
+  // per-frame ground snap, the chest aim and the lights all assume feet-at-origin;
+  // centred files leaked that assumption and the snap dragged him 0.91 m underground
+  // every frame — exactly "half of his body buried". footLift corrects those sites.
+  // (A wrapper Group doing this invisibly was tried and broke garment/skin binding;
+  // the explicit offset below is the honest fix.)
+  footLift = -fit.min.y;
 
   root.traverse((o) => {
     if (o.isMesh || o.isSkinnedMesh) {
@@ -976,18 +986,18 @@ async function loadCharacter() {
     }
   });
   root.position.set(2.15, heightAt(2.15, 2.9) + root.position.y, 2.9);
-  // Compose the spawn heading as a quaternion: assigning rotation.y here would
-  // REPLACE the up-correction above, because an Euler write overwrites the whole
-  // quaternion.
   // Face the camp. The follow camera sits BEHIND him, so whatever is in FRONT of him
   // lands behind him on screen — and spawning him facing away from the fire put the
   // campfire between the camera and the body, so its crossed logs occluded him from the
   // waist down. That is the reported "half of it is cut off from waist": a prop, not
   // the skin (the weights and bind measure clean). Facing the camp puts the view line
   // clear and the flames behind him.
-  const spawnYaw = Math.atan2(2.15, 2.9);   // the rig faces its local -Z
+  //
+  // The spawn heading is composed as a quaternion, not rotation.y: an Euler write
+  // here would REPLACE the up-correction above, because an Euler write overwrites
+  // the whole quaternion.
   root.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(
-    new THREE.Vector3(0, 1, 0), spawnYaw,
+    new THREE.Vector3(0, 1, 0), Math.atan2(2.15, 2.9),   // the rig faces its local -Z
   ));
   scene.add(root);
   character = root;
@@ -1309,10 +1319,12 @@ function tick() {
       } else {
         state.blocked = false;
       }
-      character.position.set(nx, heightAt(nx, nz) + jumpH, nz);
+      // + footLift: his origin rides footLift above his soles, so snapping the
+      // origin to the terrain would bury a centred-mesh file (the delver) waist-deep.
+      character.position.set(nx, heightAt(nx, nz) + jumpH + footLift, nz);
     } else {
       // Standing still can still be mid-jump.
-      character.position.y = heightAt(character.position.x, character.position.z) + jumpH;
+      character.position.y = heightAt(character.position.x, character.position.z) + jumpH + footLift;
     }
     setClip(gait);
 
@@ -1348,13 +1360,13 @@ function tick() {
       // black legs against the near-black ground read as "buried to the waist".
       // Waist height lights the whole figure and separates it from the ground.
       charLight.position.copy(p).addScaledVector(toCam, 1.25);
-      charLight.position.y = p.y + 0.5;
-      rim.position.set(p.x - 3.4, p.y + 4.2, p.z - 4.2);
+      charLight.position.y = p.y - footLift + 0.5;   // waist height above his SOLES
+      rim.position.set(p.x - 3.4, p.y - footLift + 4.2, p.z - 4.2);
       rim.target.position.copy(p);
       if (!prevFollow) {
         prevFollow = p.clone();
         prevYaw = character.rotation.y;
-        camFocusY = p.y + 0.95;
+        camFocusY = p.y - footLift + 0.95;   // aim at his CHEST, not his (lifted) origin
         prevFocusY = camFocusY;
       }
       // Horizontal: still locked to him exactly, so he can never drift
@@ -1367,7 +1379,7 @@ function tick() {
       // ridge snapped the whole view up and down, which is what made the follow
       // read as rigid rather than continuous. The eye now rides a damped version
       // of his height instead.
-      camFocusY += ((p.y + 0.95) - camFocusY) * (1 - Math.exp(-9 * dt));
+      camFocusY += ((p.y - footLift + 0.95) - camFocusY) * (1 - Math.exp(-9 * dt));
       const dySoft = camFocusY - prevFocusY;
       camera.position.y += dySoft;
       prevFocusY = camFocusY;
