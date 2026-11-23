@@ -95,7 +95,10 @@ const DRESS = (params.get('dress') || '').toLowerCase();
  * the same 65-bone `mixamorig*` skeleton, so our clip set and the delver dressing
  * both apply as-is, with no retargeting.
  */
-const CHAR_FILE = params.get('char') || 'soldier.glb';
+// The default is a character that arrives RIGGED, ANIMATED AND TEXTURED (OpenGameArt,
+// CC0): no donor clips, no garments, no rigging on our side. The sculpted candidates
+// stay in the roster under char:.
+const CHAR_FILE = params.get('char') || 'man-animated.glb';
 state.lite = LITE;
 state.profile = Q.label;
 
@@ -1167,7 +1170,7 @@ document.querySelectorAll('button.clip[data-clip]').forEach((b) => {
 // Character switcher. The roster lives in index.html so it can be edited in one place;
 // each button reloads with ?char=<file>, keeping any other param (lite, dress) intact.
 const charButtons = [...document.querySelectorAll('button.clip[data-char]')];
-const currentChar = () => new URLSearchParams(location.search).get('char') || 'soldier.glb';
+const currentChar = () => new URLSearchParams(location.search).get('char') || 'man-animated.glb';
 const markChar = () => charButtons.forEach((b) => {
   const on = b.dataset.char === currentChar();
   b.setAttribute('aria-pressed', String(on));
