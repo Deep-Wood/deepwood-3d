@@ -1082,7 +1082,10 @@ async function loadCharacter() {
   root.traverse((o) => {
     if (!hand && /right.?hand/i.test(o.name)) hand = o;
   });
-  if (hand) root.userData.tool = attachTool(hand);
+  // The hoe is a prop, not part of the sculpt: the delver ships as the original
+  // asset only ("keep it as original"), and the stick read as a broken arm.
+  const wantsTool = Boolean(hand) && !/delver/i.test(CHAR_FILE);
+  if (hand && wantsTool) root.userData.tool = attachTool(hand);
 
   // A candidate that brings its OWN appearance must not be dressed. The procedural
   // hood, cape, tunic, bracers, trousers and boots are sized from THIS rig's joints
@@ -1137,7 +1140,7 @@ async function loadCharacter() {
   setClip('Idle', { force: true }); // normal entry point: full weight, no fade
   state.character = root;
   state.clips = Object.keys(actions);
-  state.hasTool = Boolean(hand);
+  state.hasTool = wantsTool;
   return root;
 }
 

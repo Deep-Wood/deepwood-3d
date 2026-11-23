@@ -107,15 +107,36 @@ src_hips_rest = (SRC_MW @ src.pose.bones[HIPS].matrix).translation.copy() if HIP
 dst_hips_rest_local = dst.data.bones[HIPS].head_local.copy() if HIPS in dst.data.bones else None
 print(f"  hips bob: {HIPS_BOB} (src rest {tuple(round(v,3) for v in src_hips_rest) if src_hips_rest else None})")
 
+def pose_to_rest():
+    """Clear every pose channel. Blender keeps matrix_basis when the action changes,
+    and the glTF exporter samples UNKEYED channels from the CURRENT pose — so without
+    this, an action that deliberately leaves bones unkeyed (the Idle's legs) ships
+    with the previous action's last frame baked into them."""
+    for n in pairs:
+        pb = dst.pose.bones[n]
+        pb.location = (0.0, 0.0, 0.0)
+        pb.rotation_quaternion = (1.0, 0.0, 0.0, 0.0)
+
 SKIP = {"tpose"}                       # the rest-pose export, not a gameplay clip
+# The Idle keeps the legs at REST. Exact-rotation retargeting preserves every joint's
+# orientation but not GROUND CONTACT: the soldier's idle has a weight shift (his knees
+# sit 0.055 apart in height, his ankles compensating), and on a rig with different
+# proportions -- our thighs are 25% longer -- that compensation no longer cancels and
+# one foot floats 0.19 m (measured, both modes; local mode also twists the arms because
+# the rest rotations differ). The delver's own bind stance is level and planted
+# (rest feet diff 0.000), so the honest idle is: his stance + the source's upper-body
+# sway. Walk/Run keep the full bake -- motion hides what a stance cannot.
+LEG_BONES = ("UpLeg", "Leg", "Foot", "Toe")
 for act in [a for a in src_actions if a.name.lower() not in SKIP]:
     src.animation_data.action = act
     f0, f1 = (int(v) for v in act.frame_range)
+    legs_at_rest = act.name == "Idle"
     # Prefixed name: the source action of the same name still exists, so a plain name
     # collides and Blender hands us "Idle.001" — leaving the ORIGINAL, un-retargeted
     # clip under the name the loader matches on. Renamed back after the sources go.
     new = bpy.data.actions.new(f"baked_{act.name}")
     new.use_fake_user = True
+    pose_to_rest()
     dst.animation_data.action = new
     for f in range(f0, f1 + 1):
         bpy.context.scene.frame_set(f)
@@ -125,6 +146,16 @@ for act in [a for a in src_actions if a.name.lower() not in SKIP]:
             q_target = (TO_LOCAL @ SRC_MW @ src.pose.bones[n].matrix).to_quaternion()
             p = PARENT[n]
             q_parent = world_rot.get(p, (TO_LOCAL @ MY_MW).to_quaternion())
+            if legs_at_rest and (n == HIPS or any(k in n for k in LEG_BONES)):
+                # Hips AND legs stay at their REST world rotation. The legs are
+                # CHILDREN of the hips: if the hips takes the source's idle rotation
+                # (its rest differs from ours), the whole leg chain swings with it —
+                # feet measured 1.5 m above the ground. The spine compensates
+                # automatically: its solve uses world_rot[Hips], which must record
+                # what the parent ACHIEVED, not what the source wanted.
+                dst.pose.bones[n].rotation_quaternion = (1.0, 0.0, 0.0, 0.0)
+                world_rot[n] = q_parent @ REST_LOCAL[n]
+                continue
             if MODE == "local":
                 # Both files are stock Mixamo rigs in a T-pose, so their LOCAL
                 # rest rotations already agree and the clip can be copied as-is.
@@ -134,7 +165,7 @@ for act in [a for a in src_actions if a.name.lower() not in SKIP]:
             world_rot[n] = q_target
         for n in pairs:
             dst.pose.bones[n].keyframe_insert("rotation_quaternion", frame=f)
-        if HIPS_BOB and src_hips_rest is not None and HIPS in dst.pose.bones:
+        if HIPS_BOB and not legs_at_rest and src_hips_rest is not None and HIPS in dst.pose.bones:
             # Copy the source Hips' WORLD translation delta, expressed in the
             # destination armature's local space. Rotations alone leave the hips at
             # their rest height while the knees bend, so the feet float.
@@ -151,6 +182,8 @@ for act in [a for a in src_actions if a.name.lower() not in SKIP]:
             kp.interpolation = "LINEAR"
     print(f"  baked '{act.name}': frames {f0}..{f1} -> {len(fcs)} curves"
           + ("" if fcs else "  WARNING: no fcurves found (API path mismatch)"))
+bpy.ops.object.mode_set(mode="POSE")
+pose_to_rest()
 bpy.ops.object.mode_set(mode="OBJECT")
 
 # ------------------------------------------------------------------ export
