@@ -1100,8 +1100,11 @@ async function loadCharacter() {
   });
   // Characters we have actually tailored a set for arrive dressed; any other character
   // carrying its own textures is still left alone by the auto-gate below.
-  const TAILORED = /thug/i;
-  const SETDEFAULT = TAILORED.test(CHAR_FILE) ? 'vest' : null;
+  // thug: his own design is the look -> vest. delver: the hooded-delver outfit is his.
+  const SETDEFAULT = /thug/i.test(CHAR_FILE) ? 'vest'
+                  : /delver/i.test(CHAR_FILE) ? 'full'
+                  : null;
+  const TAILORED = SETDEFAULT !== null;
 
   if (DRESS === 'none') {
     // explicit "show me the raw asset" — used to tell a broken garment from a broken mesh
@@ -1119,7 +1122,7 @@ async function loadCharacter() {
     // own surface: no teal multiply over his textures.
     const SETWANT = { full: 'full', top: 'top', cloak: 'cloak', vest: 'vest' };
     dressDelver(root, { set: SETWANT[DRESS] || SETDEFAULT || 'cloak',
-                        tint: !DRESS && !TAILORED.test(CHAR_FILE) });
+                        tint: !DRESS && !TAILORED });
   }
   setClip('Idle', { force: true }); // normal entry point: full weight, no fade
   state.character = root;
@@ -1147,6 +1150,23 @@ document.querySelectorAll('button.clip[data-clip]').forEach((b) => {
     setClip(next, { force: true });
   });
 });
+
+// Character switcher. The roster lives in index.html so it can be edited in one place;
+// each button reloads with ?char=<file>, keeping any other param (lite, dress) intact.
+const charButtons = [...document.querySelectorAll('button.clip[data-char]')];
+const currentChar = () => new URLSearchParams(location.search).get('char') || 'soldier.glb';
+const markChar = () => charButtons.forEach((b) => {
+  const on = b.dataset.char === currentChar();
+  b.setAttribute('aria-pressed', String(on));
+  b.setAttribute('title', on ? 'currently loaded' : `load ${b.dataset.char}`);
+});
+charButtons.forEach((b) => b.addEventListener('click', () => {
+  const p = new URLSearchParams(location.search);
+  p.set('char', b.dataset.char);
+  p.set('v', String((Date.now() % 90000) + 1000)); // the preview server caches hard
+  location.search = p.toString();
+}));
+markChar();
 
 // ---------------------------------------------------------------- resize ---
 addEventListener('resize', () => {

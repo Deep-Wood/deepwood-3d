@@ -107,7 +107,14 @@ print(f"skeleton: hips head z {h_hips_z:.3f}, toe head z {h_toe_z:.3f} "
       f"(span {h_hips_z - h_toe_z:.3f} = {(h_hips_z - h_toe_z)/sold_h*100:.1f}% of height)")
 
 # ------------------------------------------------------------------- delver
-bpy.ops.import_scene.gltf(filepath=DEL)
+def import_any(path):
+    if path.lower().endswith('.fbx'):
+        bpy.ops.import_scene.fbx(filepath=path)
+    else:
+        bpy.ops.import_scene.gltf(filepath=path)
+
+
+import_any(DEL)
 delv = max([o for o in bpy.data.objects if o.type == "MESH"], key=lambda o: len(o.data.vertices))
 for o in bpy.data.objects:
     o.select_set(o is delv)
