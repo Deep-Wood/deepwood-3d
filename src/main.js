@@ -34,6 +34,8 @@ const state = {
   texBytes: 0,
 };
 window.__proto3d = state;
+// Scratch for the per-frame held-tool counter-scale (see the tick).
+const _toolWs = new THREE.Vector3();
 window.addEventListener('error', (e) => state.errors.push(String(e.message)));
 window.addEventListener('unhandledrejection', (e) => state.errors.push(String(e.reason?.message || e.reason)));
 
@@ -607,24 +609,53 @@ function setClip(name, { force = false } = {}) {
 state.setClip = setClip;
 
 function attachTool(handBone) {
+  // The game's tool is a pickaxe (public/art/hunter.png): wooden handle, steel
+  // head with two opposing spikes. Built from primitives in METRES; the group's
+  // origin is the grip point, so the fist holds the handle a third below the head.
   const tool = new THREE.Group();
-  const handle = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.028, 0.032, 0.85, 8),
-    new THREE.MeshStandardMaterial({ color: 0x6b4a2f, roughness: 0.9 }),
-  );
+  const wood = new THREE.MeshStandardMaterial({ color: 0x6b4a2f, roughness: 0.9 });
+  const steel = new THREE.MeshStandardMaterial({ color: 0x9aa3ad, roughness: 0.4, metalness: 0.85 });
+  const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.021, 0.026, 0.78, 8), wood);
+  handle.position.y = -0.09;
   handle.castShadow = true;
-  const headMat = new THREE.MeshStandardMaterial({ color: 0x9aa3ad, roughness: 0.45, metalness: 0.85 });
-  const head = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.09, 0.1), headMat);
-  head.position.y = 0.42;
+  const head = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.07, 0.09), steel);
+  head.position.y = 0.31;
   head.castShadow = true;
-  const tip = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.2, 5), headMat);
-  tip.position.set(0.17, 0.42, 0);
-  tip.rotation.z = -Math.PI / 2;
-  tip.castShadow = true;
-  tool.add(handle, head, tip);
-  tool.position.set(0.04, 0.02, 0.02);
-  tool.rotation.set(1.15, 0.25, 0.35);
+  const spikeGeo = new THREE.ConeGeometry(0.045, 0.24, 6);
+  const spikeR = new THREE.Mesh(spikeGeo, steel);
+  spikeR.position.set(0.28, 0.31, 0);
+  spikeR.rotation.z = -Math.PI / 2;
+  spikeR.castShadow = true;
+  const spikeL = new THREE.Mesh(spikeGeo, steel);
+  spikeL.position.set(-0.28, 0.31, 0);
+  spikeL.rotation.z = Math.PI / 2;
+  spikeL.castShadow = true;
+  tool.add(handle, head, spikeR, spikeL);
+  // Grip pose per rig class. The Mixamo RightHand pose is the proven one (the hoe
+  // was held correctly for sessions); the Quaternius Fist_R pose starts from the
+  // bone's own axes and is fine-tuned via ?toolpos=&toolrot= (CSV, metres/radians),
+  // so tuning needs no rebuild - final values get baked back here.
+  const isFist = /fist[._]?r$/i.test(handBone.name);
+  const pose = isFist
+    ? { p: [0.0, 0.02, 0.0], r: [2.616, -1.045, 0.185] }
+    : { p: [0.04, 0.02, 0.02], r: [1.15, 0.25, 0.35] };
+  const csv = (k) => (params.get(k) || '').split(',').map(Number).filter((v) => !Number.isNaN(v));
+  const tp = csv('toolpos');
+  const tr = csv('toolrot');
+  if (tp.length === 3) pose.p = tp;
+  if (tr.length === 3) pose.r = tr;
+  tool.position.set(...pose.p);
+  tool.rotation.set(...pose.r);
   handBone.add(tool);
+  // Bones can carry inherited scale (the Quaternius rig measures ~1.6x per node);
+  // counteract it so the tool stays metre-sized relative to the character.
+  handBone.updateWorldMatrix(true, false);
+  const ws = new THREE.Vector3();
+  handBone.getWorldScale(ws);
+  const fitScale = state.characterFit?.scaled || 1;
+  tool.scale.set(fitScale / ws.x, fitScale / ws.y, fitScale / ws.z);
+  tool.userData.isTool = true;
+  state.toolBone = handBone.name;
   return tool;
 }
 
@@ -1081,14 +1112,25 @@ async function loadCharacter() {
     root.updateMatrixWorld(true);
   }
 
+  // The grip bone: Mixamo rigs name it RightHand; the Quaternius RPG rigs end the
+  // arm at Fist.R (their own weapons hang off a Weapon.R socket beside it). Note
+  // GLTFLoader sanitizes node names - dots become underscores - hence [._]?. The
+  // isBone guard matters: FBX imports can carry orphan name-twins outside the
+  // skinned skeleton, and a tool on one of those floats at the model's origin.
   let hand = null;
   root.traverse((o) => {
-    if (!hand && /right.?hand/i.test(o.name)) hand = o;
+    if (!hand && o.isBone && (/right.?hand/i.test(o.name) || /fist[._]?r$/i.test(o.name))) hand = o;
   });
-  // The hoe is a prop, not part of the sculpt: the delver ships as the original
+  // The pickaxe is a prop, not part of the sculpt: the delver ships as the original
   // asset only ("keep it as original"), and the stick read as a broken arm.
+  state.tool = null;
+  state.toolBone = null;
   const wantsTool = Boolean(hand) && !/delver/i.test(CHAR_FILE);
-  if (hand && wantsTool) root.userData.tool = attachTool(hand);
+  if (hand && wantsTool) {
+    root.userData.tool = attachTool(hand);
+    state.tool = root.userData.tool;
+    state.toolBone = hand;
+  }
 
   // A candidate that brings its OWN appearance must not be dressed. The procedural
   // hood, cape, tunic, bracers, trousers and boots are sized from THIS rig's joints
@@ -1420,6 +1462,19 @@ function tick() {
   if (camera.position.y < eyeFloor) camera.position.y = eyeFloor;
 
   mixer?.update(dt);
+  // The held tool rides a bone whose scale the clips themselves animate (the
+  // Quaternius pack bakes scale curves into every track), so a load-time
+  // normalization goes stale the first frame. Counter-scale every frame instead:
+  // the tool stays metre-sized relative to the character whatever the fist does.
+  if (state.tool && state.toolBone) {
+    state.toolBone.updateWorldMatrix(true, false);
+    state.toolBone.getWorldScale(_toolWs);
+    const f = state.characterFit?.scaled || 1;
+    const cx = THREE.MathUtils.clamp(f / _toolWs.x, 0.05, 8);
+    const cy = THREE.MathUtils.clamp(f / _toolWs.y, 0.05, 8);
+    const cz = THREE.MathUtils.clamp(f / _toolWs.z, 0.05, 8);
+    state.tool.scale.set(cx, cy, cz);
+  }
   controls.update();
   renderer.render(scene, camera);
   updateHud(dt);
