@@ -36,6 +36,16 @@ const state = {
 window.__proto3d = state;
 // Scratch for the per-frame held-tool counter-scale (see the tick).
 const _toolWs = new THREE.Vector3();
+const _toolQ = new THREE.Quaternion();
+const _toolParentQ = new THREE.Quaternion();
+const _toolGoal = new THREE.Quaternion();
+const _toolMat = new THREE.Matrix4();
+const _toolFwd = new THREE.Vector3();
+const _toolDir = new THREE.Vector3();
+const _toolLat = new THREE.Vector3();
+const _toolZ = new THREE.Vector3();
+const _toolUp = new THREE.Vector3(0, 1, 0);
+const _toolDown = new THREE.Vector3(0, -0.75, 0);
 window.addEventListener('error', (e) => state.errors.push(String(e.message)));
 window.addEventListener('unhandledrejection', (e) => state.errors.push(String(e.reason?.message || e.reason)));
 
@@ -608,44 +618,55 @@ function setClip(name, { force = false } = {}) {
 }
 state.setClip = setClip;
 
-function attachTool(handBone) {
+function attachTool(handBone, root) {
   // The game's tool is a pickaxe (public/art/hunter.png): wooden handle, steel
   // head with two opposing spikes. Built from primitives in METRES; the group's
   // origin is the grip point, so the fist holds the handle a third below the head.
   const tool = new THREE.Group();
   const wood = new THREE.MeshStandardMaterial({ color: 0x6b4a2f, roughness: 0.9 });
   const steel = new THREE.MeshStandardMaterial({ color: 0x9aa3ad, roughness: 0.4, metalness: 0.85 });
+  // Origin is the BUTT of the handle, at the fist: the shaft runs forward from
+  // the hand to the head at +0.78. (An earlier build centred the shaft on the
+  // fist, leaving half of it trailing behind — which read as a backwards pick.)
   const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.021, 0.026, 0.78, 8), wood);
-  handle.position.y = -0.09;
+  handle.position.y = 0.37;
   handle.castShadow = true;
   const head = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.07, 0.09), steel);
-  head.position.y = 0.31;
+  head.position.y = 0.76;
   head.castShadow = true;
   const spikeGeo = new THREE.ConeGeometry(0.045, 0.24, 6);
   const spikeR = new THREE.Mesh(spikeGeo, steel);
-  spikeR.position.set(0.28, 0.31, 0);
+  spikeR.position.set(0.28, 0.76, 0);
   spikeR.rotation.z = -Math.PI / 2;
   spikeR.castShadow = true;
   const spikeL = new THREE.Mesh(spikeGeo, steel);
-  spikeL.position.set(-0.28, 0.31, 0);
+  spikeL.position.set(-0.28, 0.76, 0);
   spikeL.rotation.z = Math.PI / 2;
   spikeL.castShadow = true;
   tool.add(handle, head, spikeR, spikeL);
-  // Grip pose per rig class. The Mixamo RightHand pose is the proven one (the hoe
-  // was held correctly for sessions); the Quaternius Fist_R pose starts from the
-  // bone's own axes and is fine-tuned via ?toolpos=&toolrot= (CSV, metres/radians),
-  // so tuning needs no rebuild - final values get baked back here.
-  const isFist = /fist[._]?r$/i.test(handBone.name);
-  const pose = isFist
-    ? { p: [0.0, 0.02, 0.0], r: [2.616, -1.045, 0.185] }
-    : { p: [0.04, 0.02, 0.02], r: [1.15, 0.25, 0.35] };
+  // Aim by the rig's actual facing (+Z points at the follow camera, so the
+  // character's forward is -Z of the root): head down-forward, crossbar lateral.
+  // Computing it from the rig avoids baking a different euler into every rig.
+  const rootQ = root.getWorldQuaternion(new THREE.Quaternion());
+  const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(rootQ);
+  const dir = fwd.clone().multiplyScalar(0.7).add(new THREE.Vector3(0, -0.75, 0)).normalize();
+  const lateral = new THREE.Vector3().crossVectors(fwd, new THREE.Vector3(0, 1, 0)).normalize();
+  const zaxis = new THREE.Vector3().crossVectors(lateral, dir).normalize();
+  const goalQ = new THREE.Quaternion().setFromRotationMatrix(
+    new THREE.Matrix4().makeBasis(lateral, dir, zaxis));
+  handBone.updateWorldMatrix(true, false);
+  const parentQ = handBone.getWorldQuaternion(new THREE.Quaternion());
+  tool.quaternion.copy(parentQ.invert().multiply(goalQ));
+  // URL overrides for future rigs: ?toolpos=&toolrot= (CSV, metres/radians).
   const csv = (k) => (params.get(k) || '').split(',').map(Number).filter((v) => !Number.isNaN(v));
   const tp = csv('toolpos');
   const tr = csv('toolrot');
-  if (tp.length === 3) pose.p = tp;
-  if (tr.length === 3) pose.r = tr;
-  tool.position.set(...pose.p);
-  tool.rotation.set(...pose.r);
+  if (tp.length === 3) tool.position.set(...tp);
+  else tool.position.set(0, 0.02, 0);
+  if (tr.length === 3) {
+    tool.rotation.set(...tr);
+    state.toolManual = true;
+  } else state.toolManual = false;
   handBone.add(tool);
   // Bones can carry inherited scale (the Quaternius rig measures ~1.6x per node);
   // counteract it so the tool stays metre-sized relative to the character.
@@ -1127,7 +1148,7 @@ async function loadCharacter() {
   state.toolBone = null;
   const wantsTool = Boolean(hand) && !/delver/i.test(CHAR_FILE);
   if (hand && wantsTool) {
-    root.userData.tool = attachTool(hand);
+    root.userData.tool = attachTool(hand, root);
     state.tool = root.userData.tool;
     state.toolBone = hand;
   }
@@ -1474,6 +1495,19 @@ function tick() {
     const cy = THREE.MathUtils.clamp(f / _toolWs.y, 0.05, 8);
     const cz = THREE.MathUtils.clamp(f / _toolWs.z, 0.05, 8);
     state.tool.scale.set(cx, cy, cz);
+    // Aim every frame from the LIVE rig facing: the load-time transform is stale
+    // (fit rotation/scale are applied after the tool is attached), so a baked euler
+    // ends up pointing wherever the bind pose happens to face.
+    if (!state.toolManual) {
+      const rootQ = state.character.getWorldQuaternion(_toolQ);
+      const fwd = _toolFwd.set(0, 0, -1).applyQuaternion(rootQ);
+      const dir = _toolDir.copy(fwd).multiplyScalar(0.7).add(_toolDown).normalize();
+      const lateral = _toolLat.crossVectors(fwd, _toolUp).normalize();
+      const zaxis = _toolZ.crossVectors(lateral, dir).normalize();
+      _toolGoal.setFromRotationMatrix(_toolMat.makeBasis(lateral, dir, zaxis));
+      const parentQ = state.toolBone.getWorldQuaternion(_toolParentQ);
+      state.tool.quaternion.copy(parentQ.invert().multiply(_toolGoal));
+    }
   }
   controls.update();
   renderer.render(scene, camera);
