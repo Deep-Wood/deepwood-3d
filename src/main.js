@@ -625,11 +625,11 @@ function attachTool(handBone, root) {
   const tool = new THREE.Group();
   const wood = new THREE.MeshStandardMaterial({ color: 0x6b4a2f, roughness: 0.9 });
   const steel = new THREE.MeshStandardMaterial({ color: 0x9aa3ad, roughness: 0.4, metalness: 0.85 });
-  // Origin is the BUTT of the handle, at the fist: the shaft runs forward from
-  // the hand to the head at +0.78. (An earlier build centred the shaft on the
-  // fist, leaving half of it trailing behind — which read as a backwards pick.)
-  const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.021, 0.026, 0.78, 8), wood);
-  handle.position.y = 0.37;
+  // Origin is the FIST, not the end of the shaft: the butt protrudes ~0.2 m above
+  // the grip and the head sits ~0.76 m below it. With the handle ending exactly at
+  // the hand, the tool reads as being grabbed next to the metal head.
+  const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.021, 0.026, 0.98, 8), wood);
+  handle.position.y = 0.27;
   handle.castShadow = true;
   const head = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.07, 0.09), steel);
   head.position.y = 0.76;
@@ -1504,7 +1504,7 @@ function tick() {
     if (!state.toolManual) {
       const rootQ = state.character.getWorldQuaternion(_toolQ);
       const fwd = _toolFwd.set(0, 0, -1).applyQuaternion(rootQ);
-      const dir = _toolDir.copy(fwd).multiplyScalar(0.7).add(_toolDown).normalize();
+      const dir = _toolDir.copy(fwd).multiplyScalar(0.2).add(_toolDown).normalize();
       const lateral = _toolLat.crossVectors(fwd, _toolUp).normalize();
       const zaxis = _toolZ.crossVectors(lateral, dir).normalize();
       _toolGoal.setFromRotationMatrix(_toolMat.makeBasis(lateral, dir, zaxis));
