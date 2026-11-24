@@ -46,6 +46,7 @@ const _toolLat = new THREE.Vector3();
 const _toolZ = new THREE.Vector3();
 const _toolUp = new THREE.Vector3(0, 1, 0);
 const _toolDown = new THREE.Vector3(0, -0.75, 0);
+const _toolRaise = new THREE.Vector3(0, 1.0, 0);
 window.addEventListener('error', (e) => state.errors.push(String(e.message)));
 window.addEventListener('unhandledrejection', (e) => state.errors.push(String(e.reason?.message || e.reason)));
 
@@ -1504,7 +1505,10 @@ function tick() {
     if (!state.toolManual) {
       const rootQ = state.character.getWorldQuaternion(_toolQ);
       const fwd = _toolFwd.set(0, 0, -1).applyQuaternion(rootQ);
-      const dir = _toolDir.copy(fwd).multiplyScalar(0.2).add(_toolDown).normalize();
+      // Held UP: the tool's +Y (toward the steel head) points up and slightly
+      // forward, so the shaft rises from the fist with the head above shoulder
+      // height and the butt tucked below the grip.
+      const dir = _toolDir.copy(fwd).multiplyScalar(0.25).add(_toolRaise).normalize();
       const lateral = _toolLat.crossVectors(fwd, _toolUp).normalize();
       const zaxis = _toolZ.crossVectors(lateral, dir).normalize();
       _toolGoal.setFromRotationMatrix(_toolMat.makeBasis(lateral, dir, zaxis));
