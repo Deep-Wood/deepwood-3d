@@ -1491,9 +1491,12 @@ function tick() {
     state.toolBone.updateWorldMatrix(true, false);
     state.toolBone.getWorldScale(_toolWs);
     const f = state.characterFit?.scaled || 1;
-    const cx = THREE.MathUtils.clamp(f / _toolWs.x, 0.05, 8);
-    const cy = THREE.MathUtils.clamp(f / _toolWs.y, 0.05, 8);
-    const cz = THREE.MathUtils.clamp(f / _toolWs.z, 0.05, 8);
+    // Mixamo's hand bone carries a ~0.007 world scale (FBX centimetres), so the
+    // needed counter-scale is ~130x; the old clamp of 8 left the tool 4 cm long —
+    // i.e. invisible in hand. Mixamo and the pack rigs differ by ~20x here.
+    const cx = THREE.MathUtils.clamp(f / _toolWs.x, 0.001, 1000);
+    const cy = THREE.MathUtils.clamp(f / _toolWs.y, 0.001, 1000);
+    const cz = THREE.MathUtils.clamp(f / _toolWs.z, 0.001, 1000);
     state.tool.scale.set(cx, cy, cz);
     // Aim every frame from the LIVE rig facing: the load-time transform is stale
     // (fit rotation/scale are applied after the tool is attached), so a baked euler
