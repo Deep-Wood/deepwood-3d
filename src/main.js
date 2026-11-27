@@ -35,16 +35,6 @@ const state = {
 };
 window.__proto3d = state;
 // Scratch for the per-frame held-tool placement (see the tick).
-const _toolParentQ = new THREE.Quaternion();
-const _toolGoal = new THREE.Quaternion();
-const _toolMat = new THREE.Matrix4();
-const _toolDir = new THREE.Vector3();
-const _toolC = new THREE.Vector3();
-const _toolLat = new THREE.Vector3();
-const _toolZ = new THREE.Vector3();
-const _toolUp = new THREE.Vector3(0, 1, 0);
-const _toolA = new THREE.Vector3();
-const _toolB = new THREE.Vector3();
 window.addEventListener('error', (e) => state.errors.push(String(e.message)));
 window.addEventListener('unhandledrejection', (e) => state.errors.push(String(e.reason?.message || e.reason)));
 
@@ -617,292 +607,6 @@ function setClip(name, { force = false } = {}) {
 }
 state.setClip = setClip;
 
-/** Rotate a bone so its child moves toward `target` (world space).
- *  Deliberately built on WORLD POSITIONS: the rigs carry huge local bone
- *  offsets (Mixamo: ~30 units) and animate bone SCALE, so local-offset maths
- *  does not describe where the child actually is. */
-function aimBoneChild(bone, child, target) {
-  const parent = bone.parent;
-  if (!parent) return;
-  const pW = new THREE.Vector3();
-  const cW = new THREE.Vector3();
-  bone.getWorldPosition(pW);
-  child.getWorldPosition(cW);
-  const cur = cW.sub(pW);
-  if (cur.lengthSq() < 1e-10) return;
-  cur.normalize();
-  const want = target.clone().sub(pW);
-  if (want.lengthSq() < 1e-10) return;
-  want.normalize();
-  const delta = new THREE.Quaternion().setFromUnitVectors(cur, want);
-  // The delta is a WORLD rotation; convert it into the parent's frame so it
-  // can be applied to the bone's local quaternion.
-  const parentQ = parent.getWorldQuaternion(new THREE.Quaternion());
-  // Q^-1 * delta * Q — built on a COPY: Quaternion.invert() mutates in place,
-  // so chaining .invert().multiply(d).multiply(parentQ) multiplied by the
-  // already-inverted quaternion and applied double rotations every frame.
-  const local = new THREE.Quaternion().copy(parentQ).invert().multiply(delta).multiply(parentQ);
-  bone.quaternion.premultiply(local);
-  bone.updateMatrixWorld(true);
-}
-
-/** Close the fist around the shaft and report where the palm grips it.
- *  The Mixamo hand ships OPEN — fingers splayed — so a shaft at the wrist read
- *  as a stick lying across an open palm. Both fixes work in world space (the
- *  rigs animate bone scale, so local-offset maths is unreliable):
- *    1. roll the hand so the knuckle ridge (index MCP -> pinky MCP) lies along
- *       the shaft — that ridge is the "tunnel" a closed fist offers a haft;
- *    2. curl every finger joint around the shaft axis, toward the palm side.
- *  Returns the palm's grip point in world space, or null for a rig without
- *  finger bones (the Quaternius fists are solid mittens and need none). */
-function gripHand(hand, shaftDir) {
-  const wrist = hand.getWorldPosition(new THREE.Vector3());
-  const fingers = [];
-  let thumb = null;
-  hand.traverse((o) => {
-    if (!o.isBone || o === hand) return;
-    const m = o.name.match(/(index|middle|ring|pinky|little|thumb)(\d+)/i);
-    if (!m) return;
-    if (m[1].toLowerCase() === 'thumb') { if (!thumb) thumb = o; return; }
-    fingers.push({ key: m[1].toLowerCase(), n: parseInt(m[2], 10), bone: o });
-  });
-  if (!fingers.length) return null;
-  // Knuckle ridge, in world space.
-  const knuckleA = fingers.find((f) => f.key === 'index' && f.n === 1);
-  const knuckleB = fingers.find((f) => (f.key === 'pinky' || f.key === 'little') && f.n === 1);
-  const knuckleDir = new THREE.Vector3();
-  if (knuckleA && knuckleB) {
-    knuckleDir.subVectors(knuckleA.bone.getWorldPosition(new THREE.Vector3()),
-      knuckleB.bone.getWorldPosition(new THREE.Vector3()));
-  } else {
-    for (const f of fingers) if (f.n === 1) knuckleDir.add(f.bone.getWorldPosition(new THREE.Vector3()).sub(wrist));
-  }
-  if (knuckleDir.lengthSq() < 1e-8) return null;
-  knuckleDir.normalize();
-  // 1. roll the hand onto the shaft (minimal rotation about the wrist; the
-  //    wrist itself does not move).
-  const roll = new THREE.Quaternion().setFromUnitVectors(knuckleDir, shaftDir);
-  const parentQ = hand.parent.getWorldQuaternion(new THREE.Quaternion());
-  hand.quaternion.premultiply(new THREE.Quaternion().copy(parentQ).invert()
-    .multiply(roll).multiply(parentQ));
-  hand.updateMatrixWorld(true);
-  // 2. after the roll, re-read where the fingers and the thumb actually point.
-  const fingerDir = new THREE.Vector3();
-  for (const f of fingers) if (f.n === 1) fingerDir.add(f.bone.getWorldPosition(new THREE.Vector3()).sub(wrist));
-  if (fingerDir.lengthSq() < 1e-8) return null;
-  fingerDir.normalize();
-  if (!thumb) return null;
-  // Palm normal for a RIGHT hand: fingers x thumb points from the back of the
-  // hand into the palm (fingers forward + thumb right = palm down).
-  const thumbDir = thumb.getWorldPosition(new THREE.Vector3()).sub(wrist);
-  const palm = new THREE.Vector3().crossVectors(fingerDir, thumbDir);
-  if (palm.lengthSq() < 1e-8) return null;
-  palm.normalize();
-  // 2b. second roll, about the shaft: bring the palm DOWN (knuckles up). The
-  //     first roll leaves the wrap plane free to spin about the haft, and the
-  //     animation's choice had the palm facing UP — the wrapping fingers then
-  //     hide UNDER the shaft and the grip reads as an open hand. Palm-down is
-  //     the standard carry and puts the curl where the camera sees it.
-  {
-    const downPerp = new THREE.Vector3(0, -1, 0)
-      .addScaledVector(shaftDir, -new THREE.Vector3(0, -1, 0).dot(shaftDir));
-    const palmPerp = palm.clone().addScaledVector(shaftDir, -palm.dot(shaftDir));
-    if (downPerp.lengthSq() > 1e-8 && palmPerp.lengthSq() > 1e-8) {
-      const roll2 = new THREE.Quaternion().setFromUnitVectors(palmPerp.normalize(), downPerp.normalize());
-      hand.quaternion.premultiply(new THREE.Quaternion().copy(parentQ).invert()
-        .multiply(roll2).multiply(parentQ));
-      hand.updateMatrixWorld(true);
-      // the fingers and thumb rode along with the roll — re-read them
-      fingerDir.set(0, 0, 0);
-      for (const f of fingers) if (f.n === 1) fingerDir.add(f.bone.getWorldPosition(new THREE.Vector3()).sub(wrist));
-      fingerDir.normalize();
-    }
-  }
-  // 3. curl: every joint rotates about the SHAFT axis (the wrap circle's axis),
-  //    in the direction that carries the fingertips toward the palm.
-  const CURL = [0.85, 1.05, 0.65];   // base, middle, distal (radians)
-  const wrapSign = Math.sign(new THREE.Vector3().crossVectors(shaftDir, fingerDir).dot(palm)) || 1;
-  for (const f of fingers) {
-    if (f.n < 1 || f.n > 3) continue;
-    const child = f.bone.children.find((c) => c.isBone);
-    if (!child) continue;
-    const pW = f.bone.getWorldPosition(new THREE.Vector3());
-    const cW = child.getWorldPosition(new THREE.Vector3());
-    const cur = cW.clone().sub(pW);
-    const len = cur.length();
-    if (len < 1e-6) continue;
-    cur.normalize();
-    const amount = (f.key === 'thumb' ? 0.3 : CURL[f.n - 1]) * wrapSign;
-    const want = cur.clone().applyQuaternion(
-      new THREE.Quaternion().setFromAxisAngle(shaftDir, amount));
-    aimBoneChild(f.bone, child, pW.clone().addScaledVector(want, len));
-  }
-  // The palm's grip centre sits on the haft, a little way from the wrist along
-  // the (post-roll) finger direction, nudged toward the palm side.
-  return wrist.clone().addScaledVector(fingerDir, 0.045).addScaledVector(palm, 0.012);
-}
-
-/** Bend the tool arm to the reference carry: elbow out, fist at the waist in
- *  front, so the shaft crosses the body instead of hanging beside the hip.
- *  Two-bone IK driven to a target derived from the rig's OWN body frame
- *  (rigFrame) — the rig families face opposite ways, so any hard-coded axis
- *  aims the arm — and the tool — the wrong way on one of them. */
-function poseToolArm(root) {
-  const hand = state.toolHand;
-  if (!hand || !hand.parent || !hand.parent.parent) return;
-  const lower = hand.parent;
-  const upper = lower.parent;
-  if (!upper.parent) return;
-  root.updateWorldMatrix(true, true);
-  const wpos = (o) => {
-    o.updateWorldMatrix(true, false);
-    const p = new THREE.Vector3();
-    o.getWorldPosition(p);
-    return p;
-  };
-  const frame = rigFrame(root);
-  const fwd = frame.fwd;
-  const right = frame.right;
-  const up = frame.up;
-  let hips = null;
-  root.traverse((o) => {
-    if (!hips && o.isBone && /hips|pelvis/i.test(o.name)) hips = o;
-  });
-  const base = hips ? wpos(hips) : root.getWorldPosition(new THREE.Vector3());
-  // Fist at HIP height, slightly forward and out to his right — the reference
-  // carry is a tool at the hip, not one raised to the chest.
-  const T = base.clone().addScaledVector(fwd, 0.3).addScaledVector(right, 0.22).addScaledVector(up, -0.02);
-
-  const S = wpos(upper);
-  const E = wpos(lower);
-  const H = wpos(hand);
-  const L1 = Math.max(E.distanceTo(S), 1e-3);
-  const L2 = Math.max(H.distanceTo(E), 1e-3);
-  const dir = T.clone().sub(S);
-  let d = dir.length();
-  dir.normalize();
-  d = Math.min(Math.max(d, Math.abs(L1 - L2) + 1e-3), L1 + L2 - 1e-3);
-  const a = (L1 * L1 - L2 * L2 + d * d) / (2 * d);
-  const hh = Math.sqrt(Math.max(0, L1 * L1 - a * a));
-  // Elbow points out to the right, back and slightly down.
-  const poleHint = right.clone().addScaledVector(fwd, -0.35).addScaledVector(up, -0.25).normalize();
-  const pole = poleHint.clone().addScaledVector(dir, -poleHint.dot(dir)).normalize();
-  const Egoal = S.clone().addScaledVector(dir, a).addScaledVector(pole, hh);
-  aimBoneChild(upper, lower, Egoal);
-  aimBoneChild(lower, hand, T);
-
-  if (state.toolManual) return;
-  // Shaft direction: the reference carry runs the haft ACROSS the body from the
-  // grip at his right hip — forward and ~30° down — so the steel head hangs at
-  // knee height on his far side, like an axe carried at the hip. NOT a stick
-  // pointed at the ground beside his boot. One direction per frame, shared
-  // with the tool placement, so arm, fist and tool can never disagree.
-  const shaftDir = new THREE.Vector3().copy(right).multiplyScalar(-0.8)
-    .addScaledVector(fwd, 0.25).addScaledVector(up, -0.5).normalize();
-  state.toolDirWorld = shaftDir.clone();
-  // Close the fist around the shaft (the Mixamo hand ships open) and store the
-  // palm's grip point for the tool placement.
-  state.toolGrip = gripHand(hand, shaftDir);
-}
-
-/** The rig's own body frame in WORLD space, read off its shoulder line:
- *  right = shoulderR - shoulderL, up = head - hips, front = right x up.
- *  Different rig families face opposite ways (Mixamo looks down +Z, the
- *  Quaternius pack down -Z), so a hard-coded axis aims the tool backwards on
- *  one family and stretches the arms into a T-pose on the other. */
-function rigFrame(root) {
-  let rB = null, lB = null, head = null, hips = null;
-  root.traverse((o) => {
-    if (!o.isBone) return;
-    const n = o.name;
-    if (!rB && /rightshoulder|shoulderr$/i.test(n)) rB = o;
-    if (!lB && /leftshoulder|shoulderl$/i.test(n)) lB = o;
-    if (!head && /head$/i.test(n)) head = o;
-    if (!hips && /hips|pelvis/i.test(n)) hips = o;
-  });
-  const wpos = (o) => {
-    if (!o) return null;
-    o.updateWorldMatrix(true, false);
-    const p = new THREE.Vector3();
-    o.getWorldPosition(p);
-    return p;
-  };
-  const up = new THREE.Vector3(0, 1, 0);
-  const hp = wpos(hips), hd = wpos(head);
-  if (hp && hd) {
-    up.subVectors(hd, hp).normalize();
-    if (up.lengthSq() < 0.5) up.set(0, 1, 0);
-  }
-  let right = null;
-  if (rB && lB) {
-    right = new THREE.Vector3().subVectors(wpos(rB), wpos(lB));
-    right.y = 0;
-    if (right.lengthSq() < 1e-6) right = null;
-    else right.normalize();
-  }
-  if (!right) {
-    const rootQ = root.getWorldQuaternion(new THREE.Quaternion());
-    right = new THREE.Vector3(1, 0, 0).applyQuaternion(rootQ);
-    right.y = 0;
-    if (right.lengthSq() < 1e-6) right.set(1, 0, 0);
-    right.normalize();
-  }
-  // front = up x right. (right x up is BACKWARD on a Y-up rig — that sign
-  // error is what pointed the pickaxe behind the character.)
-  const fwd = new THREE.Vector3().crossVectors(up, right).normalize();
-  if (fwd.lengthSq() < 0.5) fwd.set(0, 0, 1);
-  // Re-orthogonalise: shoulders can be slightly rotated by the animation.
-  right.crossVectors(fwd, up).normalize();
-  return { right, up, fwd };
-}
-
-function attachTool(handBone, root) {
-  // The game's tool is a pickaxe (public/art/hunter.png): wooden handle, steel
-  // head with two opposing spikes. Built from primitives in METRES; the group's
-  // origin is the grip point, so the fist holds the handle a third below the head.
-  const tool = new THREE.Group();
-  const wood = new THREE.MeshStandardMaterial({ color: 0x6b4a2f, roughness: 0.9 });
-  const steel = new THREE.MeshStandardMaterial({ color: 0x9aa3ad, roughness: 0.4, metalness: 0.85 });
-  // The group's ORIGIN is the BUTT END of the handle: the fist sits at the
-  // very end, the shaft runs from there to the head at +0.78. (The reference
-  // hold grips right at the end of the haft, a short stub past the fist.)
-  const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.024, 0.03, 0.82, 8), wood);
-  handle.position.y = 0.39;
-  handle.castShadow = true;
-  const head = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.075, 0.085), steel);
-  head.position.y = 0.78;
-  head.castShadow = true;
-  const spikeGeo = new THREE.ConeGeometry(0.05, 0.26, 6);
-  const spikeR = new THREE.Mesh(spikeGeo, steel);
-  spikeR.position.set(0.27, 0.78, 0);
-  spikeR.rotation.z = -Math.PI / 2;
-  spikeR.castShadow = true;
-  const spikeL = new THREE.Mesh(spikeGeo, steel);
-  spikeL.position.set(-0.27, 0.78, 0);
-  spikeL.rotation.z = Math.PI / 2;
-  spikeL.castShadow = true;
-  tool.add(handle, head, spikeR, spikeL);
-  // URL overrides for future rigs: ?toolpos=&toolrot= (CSV, metres/radians).
-  const csv = (k) => (params.get(k) || '').split(',').map(Number).filter((v) => !Number.isNaN(v));
-  const tp = csv('toolpos');
-  const tr = csv('toolrot');
-  if (tp.length === 3) tool.position.set(...tp);
-  else tool.position.set(0, 0, 0);
-  if (tr.length === 3) {
-    tool.rotation.set(...tr);
-    state.toolManual = true;
-  } else state.toolManual = false;
-  // The tool lives under the CHARACTER ROOT, not under the hand bone: the
-  // Quaternius clips animate bone SCALE, so a tool parented to the fist
-  // inherits it and renders as a metre-wide log. Each frame we place it at
-  // the fist's world position instead, in plain metres.
-  root.add(tool);
-  tool.userData.isTool = true;
-  state.toolBone = handBone.name;
-  state.toolHand = handBone;
-  return tool;
-}
-
 /**
  * The delver: DeepWood's character is a hooded figure in a muted teal cloak with
  * a pickaxe (see the game's `public/art/hunter.png`). The placeholder body is the
@@ -1306,7 +1010,6 @@ async function loadCharacter() {
     state.characterRig = 'none (static mesh — needs rigging)';
     state.character = root;
     state.clips = [];
-    state.hasTool = false;
     return root;
   }
   state.characterRig = 'skinned';
@@ -1362,26 +1065,6 @@ async function loadCharacter() {
     root.updateMatrixWorld(true);
   }
 
-  // The grip bone: Mixamo rigs name it RightHand; the Quaternius RPG rigs end the
-  // arm at Fist.R (their own weapons hang off a Weapon.R socket beside it). Note
-  // GLTFLoader sanitizes node names - dots become underscores - hence [._]?. The
-  // isBone guard matters: FBX imports can carry orphan name-twins outside the
-  // skinned skeleton, and a tool on one of those floats at the model's origin.
-  let hand = null;
-  root.traverse((o) => {
-    if (!hand && o.isBone && (/right.?hand/i.test(o.name) || /fist[._]?r$/i.test(o.name))) hand = o;
-  });
-  // The pickaxe is a prop, not part of the sculpt: the delver ships as the original
-  // asset only ("keep it as original"), and the stick read as a broken arm.
-  state.tool = null;
-  state.toolBone = null;
-  const wantsTool = Boolean(hand) && !/delver/i.test(CHAR_FILE);
-  if (hand && wantsTool) {
-    root.userData.tool = attachTool(hand, root);
-    state.tool = root.userData.tool;
-    state.toolBone = hand;
-  }
-
   // A candidate that brings its OWN appearance must not be dressed. The procedural
   // hood, cape, tunic, bracers, trousers and boots are sized from THIS rig's joints
   // for a body that has none — so on a fully modelled, textured character they slice
@@ -1435,7 +1118,6 @@ async function loadCharacter() {
   setClip('Idle', { force: true }); // normal entry point: full weight, no fade
   state.character = root;
   state.clips = Object.keys(actions);
-  state.hasTool = wantsTool;
   return root;
 }
 
@@ -1712,45 +1394,6 @@ function tick() {
   if (camera.position.y < eyeFloor) camera.position.y = eyeFloor;
 
   mixer?.update(dt);
-  if (state.tool && state.character) poseToolArm(state.character);
-  // The tool is a child of the character ROOT (not the fist bone) so it never
-  // inherits the animated bone scale of the Quaternius clips. Each frame it is
-  // placed at the fist's world position and aimed from the rig's own frame.
-  if (state.tool && state.toolHand) {
-    state.toolHand.updateWorldMatrix(true, false);
-    // The palm's grip point comes from the same per-frame pass that posed the
-    // arm and closed the fist (poseToolArm -> gripHand), so the haft sits in
-    // the hand rather than at the wrist bone.
-    const grip = state.toolGrip || state.toolHand.getWorldPosition(_toolA);
-    state.tool.position.copy(state.character.worldToLocal(grip.clone()));
-    // The root carries the file's fit scale (0.62 on the monk, 0.91 on the bald
-    // man) and the tool inherits it — same-height characters would carry
-    // different-size tools. Counter-scale so the haft is always its authored
-    // metre length.
-    const ws = state.character.getWorldScale(_toolC).x || 1;
-    state.tool.scale.setScalar(1 / ws);
-    if (!state.toolManual && state.toolDirWorld) {
-      // The shaft direction was decided WITH the arm pose this frame, so tool,
-      // arm and fist can never disagree.
-      const dir = _toolDir.copy(state.toolDirWorld);
-      // Head bar in the VERTICAL plane containing the shaft: the steel hangs
-      // down from the haft like the reference, one spike aimed at the ground.
-      const barAxis = _toolLat.copy(_toolUp).addScaledVector(dir, -_toolUp.dot(dir));
-      if (barAxis.lengthSq() < 1e-6) barAxis.set(1, 0, 0);
-      barAxis.normalize();
-      const zaxis = _toolZ.crossVectors(barAxis, dir).normalize();
-      _toolGoal.setFromRotationMatrix(_toolMat.makeBasis(barAxis, dir, zaxis));
-      // The goal is a WORLD rotation; the tool's parent is the root, which is
-      // rotated, so convert into the root's local frame.
-      const rootQ = state.character.getWorldQuaternion(_toolParentQ);
-      state.tool.quaternion.copy(rootQ.invert().multiply(_toolGoal));
-      // The origin is the butt end; slide it back so the knob shows past the
-      // fist, as in the reference grip.
-      const stub = _toolB.copy(dir).multiplyScalar(-0.1);
-      state.tool.position.add(state.character.worldToLocal(grip.clone().add(stub))
-        .sub(state.character.worldToLocal(grip.clone())));
-    }
-  }
   controls.update();
   renderer.render(scene, camera);
   updateHud(dt);
