@@ -33,12 +33,21 @@ _ap.add_argument("--hips-bob", choices=["0", "1"], default="1",
                  help="drive the Hips bone's translation from the clip. Without it the "
                       "knee-bend is copied but the hips keep their rest height, so the "
                       "feet lift off the ground mid-stride (measured: ankle at 0.34 m)")
+_ap.add_argument("--idle-legs-rest", action="store_true",
+                 help="keep the Idle clip's legs at the sculpt's own stance instead of "
+                      "borrowing Soldier.Idle's striding legs")
+_ap.add_argument("--legs-keep-rest-orientation", action="store_true",
+                 help="when copying world rotations, preserve each dest leg bone's rest "
+                      "orientation (e.g. the sculpt's toes-out, angled feet) instead of "
+                      "forcing Soldier's bone orientation")
 _ap.add_argument("--mode", choices=["world", "local"], default="world",
                  help="world = copy each joint's world rotation (needed when the two "
                       "rest poses differ, e.g. our own sculpt rig); local = copy local "
                       "rotations (correct when both files are stock Mixamo rigs)")
 _args = _ap.parse_args()
 MODE = _args.mode
+IDLE_LEGS_REST = _args.idle_legs_rest
+KEEP_LEG_REST = _args.legs_keep_rest_orientation
 HIPS_BOB = _args.hips_bob == '1'
 RIG = _args.rig
 OUT = _args.out
@@ -81,6 +90,18 @@ for n in pairs:
                      if b.parent else b.matrix_local).to_quaternion()
 PARENT = {n: (dst.data.bones[n].parent.name if dst.data.bones[n].parent else None)
           for n in pairs}
+
+# The soldier's feet are flat and square; our sculpt's feet are angled and toes-out.
+# Copying Soldier's absolute world rotation onto those bones twists the feet.  The
+# difference between the two REST orientations is the fixed offset to re-apply.
+LEG_OFFSET = {}
+for n in pairs:
+    if not any(k in n for k in ("UpLeg", "Leg", "Foot", "Toe")):
+        continue
+    s0 = (TO_LOCAL @ SRC_MW @ src.data.bones[n].matrix_local).to_quaternion()
+    d0 = dst.data.bones[n].matrix_local.to_quaternion()
+    LEG_OFFSET[n] = d0 @ s0.inverted()
+print(f"leg rest offsets: {len(LEG_OFFSET)} bones")
 
 def action_fcurves(action):
     """F-curves across API generations: Blender 4.4+/5 replaced a flat Action.fcurves
@@ -153,13 +174,21 @@ for act in [a for a in src_actions if a.name.lower() not in SKIP]:
                 dst.pose.bones[n].rotation_quaternion = (1.0, 0.0, 0.0, 0.0)
                 world_rot[n] = q_parent @ REST_LOCAL[n]
                 continue
+            if IDLE_LEGS_REST and act.name.lower() == "idle":
+                # The sculpt already stands exactly as delivered; Soldier.Idle's
+                # striding knees would overwrite that stance.
+                dst.pose.bones[n].rotation_quaternion = (1.0, 0.0, 0.0, 0.0)
+                world_rot[n] = q_parent @ REST_LOCAL[n]
+                continue
+            tgt = q_target
             if MODE == "local":
                 # Both files are stock Mixamo rigs in a T-pose, so their LOCAL
                 # rest rotations already agree and the clip can be copied as-is.
                 dst.pose.bones[n].rotation_quaternion = src.pose.bones[n].rotation_quaternion
             else:
-                dst.pose.bones[n].rotation_quaternion = (q_parent @ REST_LOCAL[n]).inverted() @ q_target
-            world_rot[n] = q_target
+                tgt = LEG_OFFSET.get(n) @ q_target if KEEP_LEG_REST else q_target
+                dst.pose.bones[n].rotation_quaternion = (q_parent @ REST_LOCAL[n]).inverted() @ tgt
+            world_rot[n] = tgt if KEEP_LEG_REST and n in LEG_OFFSET else q_target
         for n in pairs:
             dst.pose.bones[n].keyframe_insert("rotation_quaternion", frame=f)
         # The hips' LOCATION stays at rest for every clip: the bob was measured on
