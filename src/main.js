@@ -1254,6 +1254,12 @@ async function loadCharacter() {
   // (A wrapper Group doing this invisibly was tried and broke garment/skin binding;
   // the explicit offset below is the honest fix.)
   footLift = -fit.min.y;
+  // Sketchfab's converter left this file's skinned render 0.85 m above its
+  // bind box and bones. All three measures disagree, so no general rule can
+  // detect it: correct the measured offset for this file alone. The per-frame
+  // ground snap reads footLift, so this lowers the whole rig — skin, bones and
+  // the hand-attached pickaxe — onto the ground together.
+  if (CHAR_FILE === 'student-2-rigged.glb') footLift -= 0.85;
 
   root.traverse((o) => {
     if (o.isMesh || o.isSkinnedMesh) {
